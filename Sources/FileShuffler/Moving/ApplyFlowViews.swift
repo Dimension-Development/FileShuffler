@@ -56,6 +56,7 @@ struct ApplyResultView: View {
     let result: MoveResult
     let undoResult: UndoResult?
     let onUndo: () -> Void
+    let onExportLog: (() -> Void)?
     let onDone: () -> Void
 
     private var canUndo: Bool {
@@ -71,6 +72,9 @@ struct ApplyResultView: View {
             if !result.skipped.isEmpty { skippedSection }
             if !result.errors.isEmpty { errorsSection }
             HStack {
+                if let onExportLog {
+                    Button("Export log…", action: onExportLog)
+                }
                 Spacer()
                 if canUndo {
                     Button("Undo", role: .destructive, action: onUndo)

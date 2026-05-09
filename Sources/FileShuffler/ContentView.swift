@@ -35,6 +35,11 @@ struct ContentView: View {
     @State private var undoResult: UndoResult?
     @State private var pendingCollision: PendingCollision?
     @State private var confirmingApply = false
+    @State private var applyStartedAt: Date?
+    @State private var auditLog: AuditLog?
+
+    // M2 — project save / load state
+    @State private var currentProjectURL: URL?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -117,6 +122,9 @@ struct ContentView: View {
                     result: result,
                     undoResult: undoResult,
                     onUndo: startUndo,
+                    // Only offer Export log when there's a log to export —
+                    // i.e. after a real apply, before an Undo wipes it back.
+                    onExportLog: auditLog != nil ? exportAuditLog : nil,
                     onDone: finishApplyFlow
                 )
             } else {
@@ -156,7 +164,19 @@ struct ContentView: View {
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
             Text("File Shuffler").font(.title2).bold()
+            if let url = currentProjectURL {
+                Text("· \(url.lastPathComponent)")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
             Spacer()
+            // Cmd-O / Cmd-S work even without File menu items because the
+            // shortcuts attach to the focused window's button.
+            Button("Open…", action: openProject)
+                .keyboardShortcut("o", modifiers: .command)
+            Button("Save…", action: saveProject)
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(baseFolder == nil || sheetURL == nil)
             if plan != nil {
                 Button("New job", action: reset)
             }
@@ -348,6 +368,9 @@ struct ContentView: View {
         files = []
         plan = nil
         error = nil
+        currentProjectURL = nil
+        auditLog = nil
+        applyStartedAt = nil
     }
 
     private func pickFolder() {
@@ -432,6 +455,10 @@ struct ContentView: View {
         applyProgress = MoveProgress(total: matches.count, done: 0, current: "")
         applyResult = nil
         undoResult = nil
+        applyStartedAt = Date()        // captured here so the audit log
+                                       // reflects when the apply *began*,
+                                       // not when it finished.
+        auditLog = nil
 
         Task {
             // Callbacks bridge the executor's async loop to the main actor's
@@ -452,6 +479,14 @@ struct ContentView: View {
             )
             await MainActor.run {
                 applyResult = result
+                if let started = applyStartedAt {
+                    auditLog = AuditLog(
+                        from: result,
+                        startedAt: started,
+                        baseFolder: baseFolder,
+                        sheetURL: sheetURL
+                    )
+                }
                 applyPhase = .completed
             }
         }
@@ -495,12 +530,103 @@ struct ContentView: View {
     /// Close the apply/undo sheet and refresh the plan against the new state
     /// of the disk — after a successful apply, the source folders are empty;
     /// after an undo they're back. Either way the plan should be re-derived.
+    /// `auditLog` is preserved so the operator can still export it from a
+    /// saved project file later, but `applyResult` is cleared since the
+    /// in-memory undo journal is no longer valid.
     private func finishApplyFlow() {
         applyPhase = .idle
         applyProgress = nil
         applyResult = nil
         undoResult = nil
         rescan()
+    }
+
+    // MARK: - Project save / load
+
+    private func saveProject() {
+        guard let baseFolder, let sheetURL else { return }
+        let panel = NSSavePanel()
+        if let xt = UTType(filenameExtension: "shuffle") {
+            panel.allowedContentTypes = [xt]
+        }
+        panel.nameFieldStringValue = currentProjectURL?.deletingPathExtension().lastPathComponent
+            ?? baseFolder.lastPathComponent
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let project = ShuffleProject(
+            baseFolderPath: baseFolder.path,
+            sheetPath: sheetURL.path,
+            fileColumn: fileColumn,
+            folderColumn: folderColumn,
+            quantityColumn: quantityColumn == Self.noneTag ? nil : quantityColumn,
+            auditLog: auditLog
+        )
+        do {
+            try ShuffleProjectIO.save(project, to: url)
+            currentProjectURL = url
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func openProject() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        if let xt = UTType(filenameExtension: "shuffle") {
+            panel.allowedContentTypes = [xt]
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        loadProject(from: url)
+    }
+
+    private func loadProject(from url: URL) {
+        do {
+            let project = try ShuffleProjectIO.load(from: url)
+            // Restore inputs first, then load the spreadsheet so column
+            // pickers populate before we apply the saved column choices.
+            let restoredBase = URL(fileURLWithPath: project.baseFolderPath)
+            let restoredSheet = URL(fileURLWithPath: project.sheetPath)
+            sheetURL = restoredSheet
+            let table = try SpreadsheetReader.read(restoredSheet)
+            sheetTable = table
+            fileColumn = project.fileColumn
+            folderColumn = project.folderColumn
+            quantityColumn = project.quantityColumn ?? Self.noneTag
+            baseFolder = restoredBase
+            auditLog = project.auditLog
+            currentProjectURL = url
+            error = nil
+            rescan()
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    // MARK: - Audit log export
+
+    private func exportAuditLog() {
+        guard let log = auditLog else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.plainText]
+        panel.nameFieldStringValue = defaultLogFilename(for: log)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let text = log.plainTextReport()
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            error = nil
+        } catch {
+            self.error = "Could not write log: \(error.localizedDescription)"
+        }
+    }
+
+    private func defaultLogFilename(for log: AuditLog) -> String {
+        // e.g. "261144 — File Shuffler log — 2026-05-09.txt"
+        let folderName = (log.baseFolderPath as NSString).lastPathComponent
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd"
+        return "\(folderName) — File Shuffler log — \(df.string(from: log.finishedAt))"
     }
 }
 

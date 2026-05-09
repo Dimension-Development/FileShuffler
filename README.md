@@ -1,6 +1,6 @@
-# File Shuffler — M1
+# File Shuffler
 
-SwiftUI macOS app that reorganises a folder of files into a new structure described by a spreadsheet — preview-before-commit plan, collision-safe apply, one-click undo. Implements the **M0 (Spike)** + **M1 (Plan & apply)** scopes from the [PRD](../PRD.md).
+SwiftUI macOS app that reorganises a folder of files into a new structure described by a spreadsheet — preview-before-commit plan, collision-safe apply, one-click undo, optional `_xN` rename from a Quantity column, save/reopen `.shuffle` projects, and exportable audit logs. Implements **M0 + M1 + most of M2** from the [PRD](../PRD.md).
 
 ## What works today
 
@@ -14,6 +14,9 @@ SwiftUI macOS app that reorganises a folder of files into a new structure descri
 - **Apply moves** with confirmation, determinate progress, and per-item status. Files move under `NSFileCoordinator` so other apps with a file open (Finder, Illustrator) participate in the lock.
 - **Collision dialog** when a destination already has a file of that name — Skip / Skip all / Replace / Replace all / Cancel apply. "All" choices stick for the rest of the run.
 - **Undo** reverses the last apply exactly, restoring every file to its original location.
+- **Quantity rename** — if your sheet has a `Quantity` (or `Qty` / `Count` / `Amount`) column, files get a `_xN` suffix on move, e.g. `foo.ai` → `foo_x30.ai`. The plan view shows the rename in blue so you can sanity-check before applying.
+- **Save / Open `.shuffle` project** (Cmd-S / Cmd-O) — small JSON sidecar capturing your folder, sheet, and column choices, plus the most recent apply's audit log. Reopen tomorrow and pick up where you left off.
+- **Export log…** on the apply summary — a plain-text report with operator, timestamps, base folder, every move (`src → dst`), and any skips or errors. Suitable for filing alongside the production folder.
 
 ## How to build & run
 
@@ -39,10 +42,12 @@ open ./FileShuffler.app
 swift test
 ```
 
-13 tests covering both engines:
+30 tests covering all four engines:
 
 - **MatchEngine** (6) — normalisation rules and the real job-261144 fixture (double-space whitespace, missing Arencia A&I orphan).
 - **MoveExecutor** (7) — real-filesystem tempdir tests for apply, skip, replace, sticky replace-all, cancel, undo, and progress reporting.
+- **Quantity rename** (11) — destination filename construction, column auto-detection, `mappingRows` quantity passthrough, end-to-end move-and-rename.
+- **ShuffleProject I/O + AuditLog text export** (6) — JSON roundtrip with and without quantity column, future-version rejection, plain-text report formatting.
 
 ## Project layout
 
@@ -62,20 +67,25 @@ FileShuffler/
 │   ├── IO/
 │   │   ├── FolderScanner.swift       # Recursive scan, hidden-file filter
 │   │   └── SpreadsheetReader.swift   # XLSX (CoreXLSX) + RFC-4180 CSV/TSV
-│   └── Moving/
-│       ├── MoveModels.swift          # Move, MoveProgress, MoveResult, UndoResult
-│       ├── MoveExecutor.swift        # apply() + undo() with NSFileCoordinator
-│       └── ApplyFlowViews.swift      # ApplyProgressView + ApplyResultView + PendingCollision
+│   ├── Moving/
+│   │   ├── MoveModels.swift          # Move, MoveProgress, MoveResult, UndoResult
+│   │   ├── MoveExecutor.swift        # apply() + undo() with NSFileCoordinator
+│   │   └── ApplyFlowViews.swift      # ApplyProgressView + ApplyResultView + PendingCollision
+│   └── Project/
+│       └── ShuffleProject.swift      # .shuffle JSON sidecar + AuditLog model + .txt exporter
 └── Tests/FileShufflerTests/
     ├── MatchEngineTests.swift
-    └── MoveExecutorTests.swift
+    ├── MoveExecutorTests.swift
+    ├── QuantityRenameTests.swift
+    └── ProjectTests.swift
 ```
 
-## What's deliberately *not* here yet (M2+)
+## What's deliberately *not* here yet (M2 remainder + M3)
 
 - Empty-source-folder cleanup after a successful apply.
-- `.shuffle` project save/load with security-scoped bookmarks.
-- Audit log + one-page PDF export.
+- One-page **PDF** export of the audit log (plain `.txt` works today).
+- App icon.
+- Security-scoped bookmarks in `.shuffle` files — currently plain absolute paths, fine on a personal Mac, would need scoping under App Sandbox.
 - Recents list on launch.
 - App Sandbox + entitlements + signing/notarisation.
 - Multi-window / multiple concurrent jobs.
