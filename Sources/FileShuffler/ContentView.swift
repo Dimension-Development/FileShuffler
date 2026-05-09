@@ -19,9 +19,14 @@ struct ContentView: View {
     @State private var sheetTable: SpreadsheetTable?
     @State private var fileColumn: String = ""
     @State private var folderColumn: String = ""
+    /// Sentinel "(none)" disables the quantity rename. Stored as the picker's
+    /// selection so SwiftUI can bind to it like a normal column choice.
+    @State private var quantityColumn: String = ContentView.noneTag
     @State private var files: [SourceFile] = []
     @State private var plan: MatchPlan?
     @State private var error: String?
+
+    static let noneTag = "(none)"
 
     // M1 — apply / undo flow state
     @State private var applyPhase: ApplyPhase = .idle
@@ -151,9 +156,6 @@ struct ContentView: View {
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
             Text("File Shuffler").font(.title2).bold()
-            Text("M0 spike — preview only, no moves yet")
-                .font(.callout)
-                .foregroundStyle(.secondary)
             Spacer()
             if plan != nil {
                 Button("New job", action: reset)
@@ -183,22 +185,35 @@ struct ContentView: View {
                 HStack(spacing: 16) {
                     columnPicker(label: "File column", selection: $fileColumn, options: table.headers)
                     columnPicker(label: "Folder column", selection: $folderColumn, options: table.headers)
+                    columnPicker(
+                        label: "Quantity column",
+                        selection: $quantityColumn,
+                        options: [Self.noneTag] + table.headers,
+                        help: "Optional. When set, files are renamed with a _xN suffix using the quantity from each row."
+                    )
                     Spacer()
                 }
                 .onChange(of: fileColumn) { rebuildPlan() }
                 .onChange(of: folderColumn) { rebuildPlan() }
+                .onChange(of: quantityColumn) { rebuildPlan() }
             }
         }
     }
 
-    private func columnPicker(label: String, selection: Binding<String>, options: [String]) -> some View {
+    private func columnPicker(
+        label: String,
+        selection: Binding<String>,
+        options: [String],
+        help: String? = nil
+    ) -> some View {
         HStack(spacing: 8) {
             Text(label).foregroundStyle(.secondary)
             Picker("", selection: selection) {
                 ForEach(options, id: \.self) { Text($0).tag($0) }
             }
             .labelsHidden()
-            .frame(maxWidth: 280)
+            .frame(maxWidth: 240)
+            .help(help ?? "")
         }
     }
 
@@ -247,6 +262,18 @@ struct ContentView: View {
                                         .font(.callout.monospaced())
                                         .lineLimit(1)
                                         .truncationMode(.middle)
+                                    if m.willRename {
+                                        // Surface the rename so the operator
+                                        // can sanity-check the _xN suffix.
+                                        Image(systemName: "arrow.right")
+                                            .foregroundStyle(.secondary)
+                                            .font(.caption)
+                                        Text(m.destinationFilename)
+                                            .font(.callout.monospaced())
+                                            .foregroundStyle(.blue)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
                                 }
                             }
                         }
@@ -317,6 +344,7 @@ struct ContentView: View {
         sheetTable = nil
         fileColumn = ""
         folderColumn = ""
+        quantityColumn = Self.noneTag
         files = []
         plan = nil
         error = nil
@@ -354,6 +382,9 @@ struct ContentView: View {
             let detected = table.detectColumns()
             fileColumn = detected.file ?? table.headers.first ?? ""
             folderColumn = detected.folder ?? (table.headers.dropFirst().first ?? "")
+            // Auto-pick the quantity column when one is present in the sheet,
+            // otherwise leave it disabled. The operator can override either way.
+            quantityColumn = detected.quantity ?? Self.noneTag
             error = nil
             rescan()
         } catch {
@@ -378,7 +409,12 @@ struct ContentView: View {
             return
         }
         do {
-            let rows = try table.mappingRows(fileColumn: fileColumn, folderColumn: folderColumn)
+            let qty = (quantityColumn == Self.noneTag) ? nil : quantityColumn
+            let rows = try table.mappingRows(
+                fileColumn: fileColumn,
+                folderColumn: folderColumn,
+                quantityColumn: qty
+            )
             plan = MatchEngine.plan(files: files, rows: rows)
             error = nil
         } catch {

@@ -53,7 +53,10 @@ enum MoveExecutor {
                 continue
             }
 
-            let destURL = destDir.appendingPathComponent(match.source.url.lastPathComponent)
+            // `destinationFilename` accounts for the optional quantity-suffix
+            // rename (e.g. `foo.ai` -> `foo_x30.ai`). Source file is moved
+            // and renamed in a single FS operation by the coordinator below.
+            let destURL = destDir.appendingPathComponent(match.destinationFilename)
 
             // No-op when source and destination resolve to the same path —
             // this can happen if Apply is run twice without rescanning.

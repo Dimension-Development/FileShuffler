@@ -24,8 +24,14 @@ struct SpreadsheetTable: Equatable {
     /// Rows aligned to `headers`. Cells beyond the header count are ignored.
     let rows: [[String]]
 
-    /// Convert the raw table into typed mapping rows by picking two columns.
-    func mappingRows(fileColumn: String, folderColumn: String) throws -> [MappingRow] {
+    /// Convert the raw table into typed mapping rows by picking the columns
+    /// the operator chose. The quantity column is optional — pass `nil` (or
+    /// the empty string) to disable the rename suffix entirely.
+    func mappingRows(
+        fileColumn: String,
+        folderColumn: String,
+        quantityColumn: String? = nil
+    ) throws -> [MappingRow] {
         let lower = headers.map { $0.lowercased() }
         guard let fileIdx = lower.firstIndex(of: fileColumn.lowercased()) else {
             throw SpreadsheetError.missingColumn(name: fileColumn, available: headers)
@@ -33,26 +39,47 @@ struct SpreadsheetTable: Equatable {
         guard let folderIdx = lower.firstIndex(of: folderColumn.lowercased()) else {
             throw SpreadsheetError.missingColumn(name: folderColumn, available: headers)
         }
+        // Quantity column is optional. If the user named one but it isn't in
+        // the sheet, we throw — silent fallback would hide a typo.
+        let qtyIdx: Int?
+        if let q = quantityColumn, !q.isEmpty {
+            guard let i = lower.firstIndex(of: q.lowercased()) else {
+                throw SpreadsheetError.missingColumn(name: q, available: headers)
+            }
+            qtyIdx = i
+        } else {
+            qtyIdx = nil
+        }
+
         var out: [MappingRow] = []
         for (n, row) in rows.enumerated() {
             guard fileIdx < row.count, folderIdx < row.count else { continue }
             let f = row[fileIdx].trimmingCharacters(in: .whitespacesAndNewlines)
             let g = row[folderIdx].trimmingCharacters(in: .whitespacesAndNewlines)
             if f.isEmpty || g.isEmpty { continue }
-            out.append(MappingRow(id: n, fileName: f, folderName: g))
+
+            var qty: String? = nil
+            if let i = qtyIdx, i < row.count {
+                let raw = row[i].trimmingCharacters(in: .whitespacesAndNewlines)
+                if !raw.isEmpty { qty = raw }
+            }
+            out.append(MappingRow(id: n, fileName: f, folderName: g, quantity: qty))
         }
         return out
     }
 
-    /// Best-effort autodetection of the file/folder columns by header name.
-    /// Picks the first header (case-insensitive) that matches a known synonym.
-    func detectColumns() -> (file: String?, folder: String?) {
+    /// Best-effort autodetection of the file/folder/quantity columns by
+    /// header name. Picks the first header (case-insensitive) that matches
+    /// a known synonym for each role.
+    func detectColumns() -> (file: String?, folder: String?, quantity: String?) {
         let fileSyns = ["file name", "filename", "file", "name", "artwork"]
         let folderSyns = ["folder name", "folder", "destination", "material", "substrate"]
+        let qtySyns = ["quantity", "qty", "count", "amount"]
         let lower = headers.map { $0.lowercased() }
         let file = headers.indices.first { fileSyns.contains(lower[$0]) }.map { headers[$0] }
         let folder = headers.indices.first { folderSyns.contains(lower[$0]) }.map { headers[$0] }
-        return (file, folder)
+        let qty = headers.indices.first { qtySyns.contains(lower[$0]) }.map { headers[$0] }
+        return (file, folder, qty)
     }
 }
 
