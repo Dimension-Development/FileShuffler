@@ -55,12 +55,28 @@ struct ApplyProgressView: View {
 struct ApplyResultView: View {
     let result: MoveResult
     let undoResult: UndoResult?
+    /// Empty source folders that the operator could clean up. `nil` while
+    /// the post-apply scan hasn't completed; an empty array means nothing
+    /// to clean.
+    let cleanupCandidates: [EmptyFolderCandidate]?
+    /// Result of the cleanup pass, once run.
+    let cleanupResult: CleanupResult?
     let onUndo: () -> Void
+    let onCleanup: (() -> Void)?
     let onExportLog: (() -> Void)?
     let onDone: () -> Void
 
     private var canUndo: Bool {
         undoResult == nil && !result.moved.isEmpty
+    }
+
+    private var canCleanUp: Bool {
+        // Only available when there are candidates and we haven't already
+        // cleaned. After undo, the source folders are no longer empty so
+        // any pending candidates are stale and we hide the section.
+        undoResult == nil
+            && cleanupResult == nil
+            && (cleanupCandidates?.isEmpty == false)
     }
 
     var body: some View {
@@ -71,6 +87,7 @@ struct ApplyResultView: View {
             if let undoResult { undoSummary(undoResult) }
             if !result.skipped.isEmpty { skippedSection }
             if !result.errors.isEmpty { errorsSection }
+            cleanupSection
             HStack {
                 if let onExportLog {
                     Button("Export log…", action: onExportLog)
@@ -154,6 +171,68 @@ struct ApplyResultView: View {
                         .foregroundStyle(.red)
                 }
             }.padding(.leading, 16)
+        }
+    }
+
+    @ViewBuilder
+    private var cleanupSection: some View {
+        if let cleanupResult {
+            // After cleanup has run.
+            cleanupSummaryView(cleanupResult)
+        } else if canCleanUp, let candidates = cleanupCandidates, !candidates.isEmpty {
+            // Available but not yet run.
+            GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: "trash")
+                            .foregroundStyle(.secondary)
+                        Text("Empty source folders").font(.headline)
+                        Text("\(candidates.count)")
+                            .font(.headline).foregroundStyle(.secondary)
+                        Spacer()
+                        if let onCleanup {
+                            Button("Clean up", action: onCleanup)
+                        }
+                    }
+                    Text("These folders had files moved out and are now empty (or only contain a `.DS_Store`).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    DisclosureGroup("Show folders") {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(candidates) { c in
+                                Text(c.relativePath).font(.caption.monospaced())
+                            }
+                        }.padding(.leading, 16)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private func cleanupSummaryView(_ cleanup: CleanupResult) -> some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Image(systemName: cleanup.hasIssues ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        .foregroundStyle(cleanup.hasIssues ? .orange : .green)
+                    Text("Cleaned up \(cleanup.deleted.count) empty folder\(cleanup.deleted.count == 1 ? "" : "s")")
+                        .font(.callout)
+                    Spacer()
+                }
+                if !cleanup.errors.isEmpty {
+                    DisclosureGroup("Errors (\(cleanup.errors.count))") {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(cleanup.errors, id: \.self) { e in
+                                Text("• \(e)")
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.red)
+                            }
+                        }.padding(.leading, 16)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

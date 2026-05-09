@@ -41,6 +41,10 @@ struct ContentView: View {
     // M2 — project save / load state
     @State private var currentProjectURL: URL?
 
+    // M2 — empty-folder cleanup state
+    @State private var cleanupCandidates: [EmptyFolderCandidate]?
+    @State private var cleanupResult: CleanupResult?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
@@ -121,7 +125,10 @@ struct ContentView: View {
                 ApplyResultView(
                     result: result,
                     undoResult: undoResult,
+                    cleanupCandidates: cleanupCandidates,
+                    cleanupResult: cleanupResult,
                     onUndo: startUndo,
+                    onCleanup: startCleanup,
                     // Only offer Export log when there's a log to export —
                     // i.e. after a real apply, before an Undo wipes it back.
                     onExportLog: auditLog != nil ? exportAuditLog : nil,
@@ -371,6 +378,8 @@ struct ContentView: View {
         currentProjectURL = nil
         auditLog = nil
         applyStartedAt = nil
+        cleanupCandidates = nil
+        cleanupResult = nil
     }
 
     private func pickFolder() {
@@ -459,6 +468,8 @@ struct ContentView: View {
                                        // reflects when the apply *began*,
                                        // not when it finished.
         auditLog = nil
+        cleanupCandidates = nil
+        cleanupResult = nil
 
         Task {
             // Callbacks bridge the executor's async loop to the main actor's
@@ -487,6 +498,12 @@ struct ContentView: View {
                         sheetURL: sheetURL
                     )
                 }
+                // Compute empty-folder candidates from the journal once the
+                // apply settles, so the result sheet can offer Clean up.
+                cleanupCandidates = FolderCleanup.candidates(
+                    from: result.moved,
+                    baseFolder: baseFolder
+                )
                 applyPhase = .completed
             }
         }
@@ -539,6 +556,17 @@ struct ContentView: View {
         applyResult = nil
         undoResult = nil
         rescan()
+    }
+
+    // MARK: - Empty-folder cleanup
+
+    private func startCleanup() {
+        guard let candidates = cleanupCandidates, !candidates.isEmpty else { return }
+        let result = FolderCleanup.cleanUp(candidates)
+        cleanupResult = result
+        // Mirror the cleanup into the audit log so an exported report shows
+        // the operator both moved AND removed folders.
+        auditLog?.cleanedUpFolders = result.deleted.map(\.relativePath)
     }
 
     // MARK: - Project save / load

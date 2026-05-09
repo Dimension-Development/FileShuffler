@@ -60,6 +60,10 @@ struct AuditLog: Codable, Equatable {
     var skipped: [String]              // relative source paths
     var errors: [LoggedError]
     var stoppedEarly: Bool
+    /// Relative paths of source folders that were removed in the cleanup
+    /// pass, if the operator opted in. Optional in JSON for backwards-
+    /// compatibility with `.shuffle` files saved before cleanup existed.
+    var cleanedUpFolders: [String]?
 
     var totals: (moved: Int, skipped: Int, errors: Int) {
         (moves.count, skipped.count, errors.count)
@@ -164,6 +168,7 @@ extension AuditLog {
             LoggedError(src: $0.match.source.url.path, message: $0.message)
         }
         self.stoppedEarly = result.stoppedEarly
+        self.cleanedUpFolders = nil    // populated later if cleanup is run
     }
 
     /// Plain-text export. Designed to be readable as-is in a terminal or a
@@ -203,6 +208,10 @@ extension AuditLog {
         if !errors.isEmpty {
             out += "\nErrors:\n"
             for e in errors { out += "  \(e.src)\n    \(e.message)\n" }
+        }
+        if let cleaned = cleanedUpFolders, !cleaned.isEmpty {
+            out += "\nEmpty source folders removed:\n"
+            for f in cleaned { out += "  \(f)\n" }
         }
         return out
     }
