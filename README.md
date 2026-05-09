@@ -18,6 +18,7 @@ SwiftUI macOS app that reorganises a folder of files into a new structure descri
 - **Save / Open `.shuffle` project** (Cmd-S / Cmd-O) — small JSON sidecar capturing your folder, sheet, and column choices, plus the most recent apply's audit log. Reopen tomorrow and pick up where you left off.
 - **Export log…** on the apply summary — a plain-text report with operator, timestamps, base folder, every move (`src → dst`), and any skips or errors. Suitable for filing alongside the production folder.
 - **Empty source folder cleanup** — after a successful apply, the result sheet surfaces source folders that are now empty (or only contain `.DS_Store`) and offers a one-click *Clean up*. Opt-in, never automatic. Removed folders go into the audit log.
+- **Export sizes…** on the apply summary — produces a CSV listing every PDF/AI page in the destination folders with width × height in millimetres. Uses **TrimBox where defined, falling back to MediaBox** (matching print-prepress convention); fallback rows are flagged in a Notes column. One row per page for multi-page PDFs. Files PDFKit can't read get a "Couldn't read" row, never silently skipped.
 - **App icon** auto-built from `assets/icon-source.png` by `scripts/bundle-app.sh`.
 
 ## How to build & run
@@ -44,13 +45,14 @@ open ./FileShuffler.app
 swift test
 ```
 
-36 tests covering every engine:
+49 tests covering every engine:
 
 - **MatchEngine** (6) — normalisation rules and the real job-261144 fixture (double-space whitespace, missing Arencia A&I orphan).
 - **MoveExecutor** (7) — real-filesystem tempdir tests for apply, skip, replace, sticky replace-all, cancel, undo, and progress reporting.
 - **Quantity rename** (11) — destination filename construction, column auto-detection, `mappingRows` quantity passthrough, end-to-end move-and-rename.
 - **ShuffleProject I/O + AuditLog text export** (6) — JSON roundtrip with and without quantity column, future-version rejection, plain-text report formatting.
 - **FolderCleanup** (6) — empty/`.DS_Store`-only detection, base-folder safety, removal, and undo-after-cleanup.
+- **PDFSizeExtractor + SizesReport CSV** (13) — fixture PDFs generated at runtime via Core Graphics (single-page A4, multi-page, MediaBox-only, MediaBox+TrimBox), missing/non-PDF graceful failure, RFC 4180 quoting for filenames with commas/quotes, fallback note in Notes column.
 
 ## Project layout
 
@@ -74,13 +76,19 @@ FileShuffler/
 │   │   ├── MoveModels.swift          # Move, MoveProgress, MoveResult, UndoResult
 │   │   ├── MoveExecutor.swift        # apply() + undo() with NSFileCoordinator
 │   │   └── ApplyFlowViews.swift      # ApplyProgressView + ApplyResultView + PendingCollision
-│   └── Project/
-│       └── ShuffleProject.swift      # .shuffle JSON sidecar + AuditLog model + .txt exporter
+│   ├── Project/
+│   │   └── ShuffleProject.swift      # .shuffle JSON sidecar + AuditLog model + .txt exporter
+│   └── Sizing/
+│       ├── PageSize.swift            # PageSize, FilePageSizes models
+│       ├── PDFSizeExtractor.swift    # PDFKit + CG dictionary check; mm output, TrimBox→MediaBox fallback
+│       └── SizesReport.swift         # CSV builder with RFC 4180 quoting
 └── Tests/FileShufflerTests/
     ├── MatchEngineTests.swift
     ├── MoveExecutorTests.swift
     ├── QuantityRenameTests.swift
-    └── ProjectTests.swift
+    ├── ProjectTests.swift
+    ├── FolderCleanupTests.swift
+    └── PDFSizingTests.swift
 ```
 
 ## What's deliberately *not* here yet

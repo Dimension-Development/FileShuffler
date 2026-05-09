@@ -64,6 +64,7 @@ struct ApplyResultView: View {
     let onUndo: () -> Void
     let onCleanup: (() -> Void)?
     let onExportLog: (() -> Void)?
+    let onExportSizes: (() -> Void)?
     let onDone: () -> Void
 
     private var canUndo: Bool {
@@ -91,6 +92,9 @@ struct ApplyResultView: View {
             HStack {
                 if let onExportLog {
                     Button("Export log…", action: onExportLog)
+                }
+                if let onExportSizes {
+                    Button("Export sizes…", action: onExportSizes)
                 }
                 Spacer()
                 if canUndo {

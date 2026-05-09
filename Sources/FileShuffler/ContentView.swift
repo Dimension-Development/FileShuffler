@@ -132,6 +132,9 @@ struct ContentView: View {
                     // Only offer Export log when there's a log to export —
                     // i.e. after a real apply, before an Undo wipes it back.
                     onExportLog: auditLog != nil ? exportAuditLog : nil,
+                    // Sizes report needs the destination files in place,
+                    // so the button hides after Undo too.
+                    onExportSizes: canExportSizes ? exportSizesReport : nil,
                     onDone: finishApplyFlow
                 )
             } else {
@@ -655,6 +658,55 @@ struct ContentView: View {
         let df = DateFormatter()
         df.dateFormat = "yyyy-MM-dd"
         return "\(folderName) — File Shuffler log — \(df.string(from: log.finishedAt))"
+    }
+
+    // MARK: - Sizes report (PDF page dimensions)
+
+    /// True when there's at least one PDF/AI in the journal that hasn't
+    /// been undone away. Used to decide whether to show the Export sizes
+    /// button at all.
+    private var canExportSizes: Bool {
+        guard undoResult == nil, let result = applyResult else { return false }
+        return result.moved.contains(where: Self.isPDFLike)
+    }
+
+    /// Extract page dimensions from every PDF/AI in the journal and write
+    /// the report. Extraction happens on click (not at apply time) so the
+    /// apply itself stays snappy on jobs where this report isn't needed.
+    private func exportSizesReport() {
+        guard let baseFolder, let result = applyResult else { return }
+        let pdfURLs = result.moved
+            .filter(Self.isPDFLike)
+            .map(\.dst)
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.nameFieldStringValue = defaultSizesFilename()
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        let extracted = PDFSizeExtractor.extract(from: pdfURLs)
+        let report = SizesReport(baseFolder: baseFolder, files: extracted)
+        do {
+            try report.csv().write(to: url, atomically: true, encoding: .utf8)
+            error = nil
+        } catch {
+            self.error = "Could not write sizes report: \(error.localizedDescription)"
+        }
+    }
+
+    private func defaultSizesFilename() -> String {
+        let folderName = baseFolder?.lastPathComponent ?? "FileShuffler"
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd"
+        return "\(folderName) — sizes — \(df.string(from: Date()))"
+    }
+
+    /// Static so the closure used in `result.moved.contains(where:)` doesn't
+    /// capture `self` — no @MainActor isolation needed for a simple
+    /// extension check.
+    private static func isPDFLike(_ move: Move) -> Bool {
+        let ext = move.dst.pathExtension.lowercased()
+        return ext == "pdf" || ext == "ai"
     }
 }
 
