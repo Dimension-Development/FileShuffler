@@ -93,7 +93,7 @@ struct SizesReportTests {
         let report = SizesReport(baseFolder: URL(fileURLWithPath: "/x"), files: [])
         let csv = report.csv()
         let firstLine = csv.split(separator: "\r\n").first.map(String.init) ?? ""
-        #expect(firstLine == "Source filename,Destination folder,Page,Width (mm),Height (mm),Total pages,Notes")
+        #expect(firstLine == "Source filename,Destination folder,Page,Width (mm),Height (mm),Total pages,Spot colours,Notes")
     }
 
     @Test("Single-page file renders one data row with empty notes")
@@ -135,7 +135,9 @@ struct SizesReportTests {
         let csv = SizesReport(baseFolder: base, files: [file]).csv()
         // The message contains no `,` `"` or newline so it isn't quoted;
         // RFC 4180 only requires quoting fields with those characters.
-        #expect(csv.contains("oops.pdf,,,,,,Couldn't read: PDFKit could not open this file"))
+        // 7 leading commas = 8 empty/blank fields up to (and not including) the
+        // Notes column (filename + 6 empty + Notes).
+        #expect(csv.contains("oops.pdf,,,,,,,Couldn't read: PDFKit could not open this file"))
     }
 
     @Test("Filenames containing commas are quoted")

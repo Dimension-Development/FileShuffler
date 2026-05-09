@@ -36,11 +36,13 @@ enum PDFSizeExtractor {
             let trimDefined = pageHasExplicitTrimBox(page)
             let box: PDFDisplayBox = trimDefined ? .trimBox : .mediaBox
             let bounds = page.bounds(for: box)
+            let spots = SpotColourExtractor.spotColours(in: page)
             pages.append(PageSize(
                 pageNumber: i + 1,
                 widthMm: pointsToMm(Double(bounds.width)),
                 heightMm: pointsToMm(Double(bounds.height)),
-                usedFallback: !trimDefined
+                usedFallback: !trimDefined,
+                spotColours: spots
             ))
         }
         return FilePageSizes(url: url, pages: pages, totalPages: count, error: nil)

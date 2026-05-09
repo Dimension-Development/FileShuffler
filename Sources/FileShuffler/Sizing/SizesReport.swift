@@ -28,12 +28,16 @@ struct SizesReport {
             let folder = relativeParent(of: file.url, base: basePath)
 
             if let err = file.error {
-                rows.append([filename, folder, "", "", "", "", "Couldn't read: \(err)"])
+                rows.append([filename, folder, "", "", "", "", "", "Couldn't read: \(err)"])
                 continue
             }
 
             for page in file.pages {
                 let note = page.usedFallback ? "TrimBox not defined, used MediaBox" : ""
+                // Multiple spots in one cell: semicolon-separated so commas
+                // inside Pantone names (rare but possible) don't trip the
+                // CSV parser. Verbatim from the PDF, no normalisation.
+                let spots = page.spotColours.joined(separator: "; ")
                 rows.append([
                     filename,
                     folder,
@@ -41,6 +45,7 @@ struct SizesReport {
                     formatMm(page.widthMm),
                     formatMm(page.heightMm),
                     String(file.totalPages),
+                    spots,
                     note
                 ])
             }
@@ -58,6 +63,7 @@ struct SizesReport {
         "Width (mm)",
         "Height (mm)",
         "Total pages",
+        "Spot colours",
         "Notes"
     ]
 

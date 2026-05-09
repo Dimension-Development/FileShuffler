@@ -11,6 +11,22 @@ struct PageSize: Equatable, Sendable {
     let widthMm: Double
     let heightMm: Double
     let usedFallback: Bool
+    /// Spot colour names declared on this page (and in any Form XObjects it
+    /// references), reported verbatim from the PDF, deduped + alphabetised.
+    /// Empty for CMYK-only pages or pages we couldn't read.
+    let spotColours: [String]
+
+    init(pageNumber: Int,
+         widthMm: Double,
+         heightMm: Double,
+         usedFallback: Bool,
+         spotColours: [String] = []) {
+        self.pageNumber = pageNumber
+        self.widthMm = widthMm
+        self.heightMm = heightMm
+        self.usedFallback = usedFallback
+        self.spotColours = spotColours
+    }
 }
 
 /// All pages of a single file, plus a graceful failure path.
