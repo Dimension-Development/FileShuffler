@@ -3,4 +3,5 @@
 DerivedData/
 *.xcodeproj/
 FileShuffler.app/
+*.zip
 .DS_Store
