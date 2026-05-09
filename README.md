@@ -1,6 +1,6 @@
 # File Shuffler
 
-SwiftUI macOS app that reorganises a folder of files into a new structure described by a spreadsheet — preview-before-commit plan, collision-safe apply, one-click undo, optional `_xN` rename from a Quantity column, save/reopen `.shuffle` projects, and exportable audit logs. Implements **M0 + M1 + most of M2** from the [PRD](../PRD.md).
+SwiftUI macOS app that reorganises a folder of files into a new structure described by a spreadsheet — preview-before-commit plan, collision-safe apply, one-click undo, optional `_xN` rename from a Quantity column, save/reopen `.shuffle` projects, and exportable audit logs. Implements **M0 + M1 + most of M2** from the [PRD](docs/PRD.md).
 
 ## What works today
 
