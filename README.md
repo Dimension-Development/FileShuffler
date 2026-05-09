@@ -83,16 +83,15 @@ FileShuffler/
     └── ProjectTests.swift
 ```
 
-## What's deliberately *not* here yet (M3)
+## What's deliberately *not* here yet
 
-- One-page **PDF** export of the audit log (plain `.txt` works today).
 - Recents list on launch.
 - Multi-window / multiple concurrent jobs.
-- Developer ID code signing + notarisation (paid Apple Developer Program). Builds today are *ad-hoc signed* — fine for personal use, will trigger a Gatekeeper warning the first time a colleague opens the .app (right-click → Open dismisses it).
-- Security-scoped bookmarks in `.shuffle` files — currently plain absolute paths, fine on a personal Mac, would need scoping under App Sandbox.
-- Recents list on launch.
-- App Sandbox + entitlements + signing/notarisation.
-- Multi-window / multiple concurrent jobs.
+
+## Won't be doing
+
+- One-page PDF export of the audit log — the plain-text export covers the use case.
+- Developer ID code signing + App Store distribution. The app is ad-hoc signed for personal use; sharing with a colleague is one right-click → Open.
 
 ## Open questions still worth validating
 
@@ -102,4 +101,4 @@ FileShuffler/
 
 ## Migrating to a full Xcode project (later)
 
-When Xcode is installed, `open Package.swift` from the project root will let you edit and run from Xcode immediately. For App Store-style distribution (signing, sandbox, entitlements) you'll want a `.xcodeproj`; the cleanest path is `File > New > Project > macOS App` and copy the source files in — the SPM package is intentionally laid out so the move is one-to-one.
+If Xcode is ever installed, `open Package.swift` from the project root will let you edit and run from Xcode without any conversion — the SPM package layout maps one-to-one to a normal Xcode project.
