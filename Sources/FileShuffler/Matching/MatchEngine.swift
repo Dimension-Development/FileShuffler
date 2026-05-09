@@ -19,30 +19,71 @@ enum MatchEngine {
 
     /// Build a plan: which files match which rows, which rows are orphaned,
     /// which files are orphaned. No mutation of the inputs, no I/O.
+    ///
+    /// Matching runs in two passes:
+    ///
+    ///   1. **Exact**, on the normalised stem. Catches the common case and
+    ///      preserves any legitimate `_xN` filenames in either the sheet
+    ///      or on disk.
+    ///   2. **Stripped**, only for rows that didn't match in Pass 1. Strips
+    ///      a trailing `_xN` suffix from the file's stem before comparing,
+    ///      catching files that were renamed by a previous run of the app
+    ///      (the idempotency case). Pass-2 matches are flagged so the UI
+    ///      can show ⚠ and the destination-filename builder knows the
+    ///      existing `_xN` is ours to replace, not user data to preserve.
     static func plan(files: [SourceFile], rows: [MappingRow]) -> MatchPlan {
-        // Index files by normalised stem so each row lookup is O(1).
-        var indexByKey: [String: Int] = [:]
-        indexByKey.reserveCapacity(files.count)
-        for (i, f) in files.enumerated() {
-            // First write wins; if there's a duplicate the second file falls
-            // through to "files not in sheet" and we surface it explicitly.
-            let key = normalise(f.nameStem)
-            if indexByKey[key] == nil { indexByKey[key] = i }
-        }
-
         var matched: [Match] = []
         var sheetOrphans: [MappingRow] = []
         var consumed = Set<Int>()
 
+        // Pass 1: exact normalised match.
+        var exactIndex: [String: Int] = [:]
+        exactIndex.reserveCapacity(files.count)
+        for (i, f) in files.enumerated() {
+            let key = normalise(f.nameStem)
+            if exactIndex[key] == nil { exactIndex[key] = i }
+        }
+
+        var unmatchedRows: [MappingRow] = []
         for row in rows {
             let key = normalise(row.fileName)
-            if let idx = indexByKey[key], !consumed.contains(idx) {
+            if let idx = exactIndex[key], !consumed.contains(idx) {
                 consumed.insert(idx)
                 let f = files[idx]
                 let needsNorm = (f.nameStem != row.fileName)
-                matched.append(Match(source: f, row: row, normalised: needsNorm))
+                matched.append(Match(
+                    source: f, row: row,
+                    normalised: needsNorm,
+                    stemMatchedAfterStrip: false
+                ))
             } else {
-                sheetOrphans.append(row)
+                unmatchedRows.append(row)
+            }
+        }
+
+        // Pass 2: try matching unmatched rows against unconsumed files
+        // with a trailing `_xN` suffix stripped from the file's stem.
+        if !unmatchedRows.isEmpty {
+            var strippedIndex: [String: Int] = [:]
+            for (i, f) in files.enumerated() where !consumed.contains(i) {
+                let stripped = stripQuantitySuffix(normalise(f.nameStem))
+                if strippedIndex[stripped] == nil { strippedIndex[stripped] = i }
+            }
+            for row in unmatchedRows {
+                let key = normalise(row.fileName)
+                if let idx = strippedIndex[key], !consumed.contains(idx) {
+                    consumed.insert(idx)
+                    let f = files[idx]
+                    matched.append(Match(
+                        source: f, row: row,
+                        // Always flag normalised so the operator sees the
+                        // ⚠ icon — Pass 2 by definition required a tweak.
+                        normalised: true,
+                        stemMatchedAfterStrip: true
+                    ))
+                } else {
+                    sheetOrphans.append(row)
+                }
             }
         }
 
@@ -55,5 +96,20 @@ enum MatchEngine {
             sheetRowsWithoutFile: sheetOrphans,
             filesNotInSheet: fileOrphans
         )
+    }
+
+    /// Strip a trailing `_x` followed by digits from the very end of a
+    /// string. Used to make the matcher (and the rename builder) idempotent
+    /// across re-runs of the app's Quantity feature. Case-insensitive on
+    /// the `x` so legacy files that happen to use `_X12` still strip. We
+    /// refuse to return an empty string — that would happen for a stem of
+    /// e.g. just `_x12` and would falsely match anything else stripped
+    /// to empty.
+    static func stripQuantitySuffix(_ s: String) -> String {
+        if let range = s.range(of: #"_x\d+$"#, options: [.regularExpression, .caseInsensitive]) {
+            let stripped = String(s[..<range.lowerBound])
+            return stripped.isEmpty ? s : stripped
+        }
+        return s
     }
 }

@@ -15,6 +15,7 @@ SwiftUI macOS app that reorganises a folder of files into a new structure descri
 - **Collision dialog** when a destination already has a file of that name — Skip / Skip all / Replace / Replace all / Cancel apply. "All" choices stick for the rest of the run.
 - **Undo** reverses the last apply exactly, restoring every file to its original location.
 - **Quantity rename** — if your sheet has a `Quantity` (or `Qty` / `Count` / `Amount`) column, files get a `_xN` suffix on move, e.g. `foo.ai` → `foo_x30.ai`. The plan view shows the rename in blue so you can sanity-check before applying.
+- **Idempotent re-runs** — the matcher uses a two-pass approach (exact first, then with `_xN` stripped) so a folder of already-renamed files can be re-processed cleanly. Files matched via the strip pass are flagged ⚠ and have their existing `_xN` *replaced* by the new quantity rather than stacked. Files with a *legitimate* `_xN` in the original name are matched exactly first and left untouched.
 - **Save / Open `.shuffle` project** (Cmd-S / Cmd-O) — small JSON sidecar capturing your folder, sheet, and column choices, plus the most recent apply's audit log. Reopen tomorrow and pick up where you left off.
 - **Export log…** on the apply summary — a plain-text report with operator, timestamps, base folder, every move (`src → dst`), and any skips or errors. Suitable for filing alongside the production folder.
 - **Empty source folder cleanup** — after a successful apply, the result sheet surfaces source folders that are now empty (or only contain `.DS_Store`) and offers a one-click *Clean up*. Opt-in, never automatic. Removed folders go into the audit log.
@@ -48,7 +49,7 @@ open ./FileShuffler.app
 swift test
 ```
 
-58 tests covering every engine:
+70 tests covering every engine:
 
 - **MatchEngine** (6) — normalisation rules and the real job-261144 fixture (double-space whitespace, missing Arencia A&I orphan).
 - **MoveExecutor** (7) — real-filesystem tempdir tests for apply, skip, replace, sticky replace-all, cancel, undo, and progress reporting.
@@ -57,6 +58,7 @@ swift test
 - **FolderCleanup** (6) — empty/`.DS_Store`-only detection, base-folder safety, removal, and undo-after-cleanup.
 - **PDFSizeExtractor + SizesReport CSV** (13) — fixture PDFs generated at runtime via Core Graphics (single-page A4, multi-page, MediaBox-only, MediaBox+TrimBox), missing/non-PDF graceful failure, RFC 4180 quoting for filenames with commas/quotes, fallback note in Notes column.
 - **SpotColourExtractor + CSV integration** (9) — hand-written minimal PDF fixtures with declared `Separation` colour spaces, single/multiple/duplicate spots, process-colorant filtering, `/All` filtering, page-level + Form-XObject merging, semicolon-separated CSV output.
+- **Idempotent matching + rename** (12) — strip helper edge cases (case insensitivity, mid-string `_xN` preserved, refuses empty); two-pass priority (exact wins over stripped when both could match); destination filename behaviour for Pass-1 vs Pass-2 matches across all four scenarios in the README behaviour table.
 
 ## Project layout
 
@@ -94,7 +96,8 @@ FileShuffler/
     ├── ProjectTests.swift
     ├── FolderCleanupTests.swift
     ├── PDFSizingTests.swift
-    └── SpotColourTests.swift
+    ├── SpotColourTests.swift
+    └── IdempotentRenameTests.swift
 ```
 
 ## What's deliberately *not* here yet
