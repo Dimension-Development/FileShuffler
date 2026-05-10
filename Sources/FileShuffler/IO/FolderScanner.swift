@@ -33,8 +33,29 @@ enum FolderScanner {
             } else {
                 relative = std.lastPathComponent
             }
-            result.append(SourceFile(url: std, nameStem: stem, relativePath: relative))
+            result.append(SourceFile(
+                url: std,
+                nameStem: stem,
+                relativePath: relative,
+                baseFolder: resolvedBase
+            ))
         }
         return result
+    }
+
+    /// Multi-source scan used by the welcome screen when the operator has
+    /// added more than one paste-link to the same job. Each base is scanned
+    /// independently and the results concatenated; `baseFolder` on each
+    /// `SourceFile` lets callers tell which paste-link a file came from.
+    /// Bases that fail to scan surface their error; partial results from
+    /// successful bases are not returned (consistent with the single-base
+    /// version's all-or-nothing semantics).
+    static func scan(bases: [URL], excluding excluded: Set<URL> = []) throws -> [SourceFile] {
+        var out: [SourceFile] = []
+        for base in bases {
+            let files = try scan(base: base, excluding: excluded)
+            out.append(contentsOf: files)
+        }
+        return out
     }
 }

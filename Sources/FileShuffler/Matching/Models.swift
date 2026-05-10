@@ -1,11 +1,26 @@
 import Foundation
 
-/// One file discovered on disk under the base folder.
+/// One file discovered on disk under one of the source folders the
+/// operator selected. `baseFolder` is the source root this file lives
+/// under — it stays attached so the plan view can prefix orphans with
+/// "which paste-link did this come from?" when the operator added
+/// multiple sources to the same job.
 struct SourceFile: Identifiable, Hashable {
     let url: URL
-    let nameStem: String      // filename without extension
-    let relativePath: String  // path relative to the base folder
+    let nameStem: String       // filename without extension
+    let relativePath: String   // path relative to `baseFolder`
+    let baseFolder: URL        // which source root this file came from
     var id: URL { url }
+
+    /// Path the UI shows to the operator. Single-source jobs see just the
+    /// relative path (matches the v1 behaviour). Multi-source jobs see
+    /// `<source folder> / <relative path>` so the source is unambiguous
+    /// when reading the plan or a conflict.
+    func displayPath(showingBase: Bool) -> String {
+        showingBase
+            ? "\(baseFolder.lastPathComponent) / \(relativePath)"
+            : relativePath
+    }
 }
 
 /// One row in the mapping spreadsheet.
@@ -88,10 +103,23 @@ struct Match: Identifiable, Hashable {
     }
 }
 
-/// The full result of the matching pass — exactly the three buckets the
-/// operator needs to see before any file moves.
+/// One spreadsheet row that has more than one file claiming to be it.
+/// Surfaces in the plan view as a red "Conflicts" section. Apply is
+/// blocked until the operator either picks a candidate or chooses to
+/// skip the row entirely — silent picks here would defeat the whole
+/// point of the app.
+struct Conflict: Identifiable, Equatable {
+    let row: MappingRow
+    let candidates: [SourceFile]
+    var id: Int { row.id }
+}
+
+/// The full result of the matching pass. Single-source jobs typically
+/// see no conflicts; multi-source jobs use the `conflicts` bucket when
+/// two source folders both contain a file matching the same sheet row.
 struct MatchPlan: Equatable {
     var matched: [Match]
+    var conflicts: [Conflict]
     var sheetRowsWithoutFile: [MappingRow]
     var filesNotInSheet: [SourceFile]
 }

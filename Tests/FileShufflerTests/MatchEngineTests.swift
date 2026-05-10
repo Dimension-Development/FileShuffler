@@ -61,22 +61,70 @@ struct MatchEngineTests {
         #expect(plan.matched.first?.normalised == true)
     }
 
-    @Test("Duplicate filenames in different folders surface second as orphan")
-    func duplicateFileNamesSurfaceSecondAsOrphan() {
+    @Test("Two files matching one row surface as a Conflict, not a silent pick")
+    func duplicateFileNamesSurfaceAsConflict() {
         let files = [
-            file("dupe", at: "/tmp/folder-a/dupe.ai"),
-            file("dupe", at: "/tmp/folder-b/dupe.ai"),
+            file("dupe", at: "/tmp/folder-a/dupe.ai", base: "/tmp/folder-a"),
+            file("dupe", at: "/tmp/folder-b/dupe.ai", base: "/tmp/folder-b"),
         ]
         let rows = [MappingRow(id: 0, fileName: "dupe", folderName: "X")]
         let plan = MatchEngine.plan(files: files, rows: rows)
+
+        #expect(plan.matched.isEmpty, "no silent pick")
+        #expect(plan.conflicts.count == 1)
+        #expect(plan.conflicts.first?.candidates.count == 2)
+        #expect(plan.filesNotInSheet.isEmpty, "candidates are claimed by the conflict, not orphaned")
+    }
+
+    @Test("Conflict resolution .use selects one file and orphans the rest")
+    func conflictResolutionUseSelectsCandidate() {
+        let chosen = file("dupe", at: "/tmp/folder-a/dupe.ai", base: "/tmp/folder-a")
+        let other = file("dupe", at: "/tmp/folder-b/dupe.ai", base: "/tmp/folder-b")
+        let files = [chosen, other]
+        let rows = [MappingRow(id: 7, fileName: "dupe", folderName: "X")]
+        let plan = MatchEngine.plan(
+            files: files, rows: rows,
+            resolutions: [7: .use(chosen.url)]
+        )
+
         #expect(plan.matched.count == 1)
+        #expect(plan.matched.first?.source.url == chosen.url)
+        #expect(plan.conflicts.isEmpty)
+        // The other candidate becomes a regular orphan once a sibling
+        // claims the row.
         #expect(plan.filesNotInSheet.count == 1)
+        #expect(plan.filesNotInSheet.first?.url == other.url)
+    }
+
+    @Test("Conflict resolution .skip leaves the row orphaned and releases candidates")
+    func conflictResolutionSkipReleasesCandidates() {
+        let a = file("dupe", at: "/tmp/folder-a/dupe.ai", base: "/tmp/folder-a")
+        let b = file("dupe", at: "/tmp/folder-b/dupe.ai", base: "/tmp/folder-b")
+        let rows = [MappingRow(id: 7, fileName: "dupe", folderName: "X")]
+        let plan = MatchEngine.plan(
+            files: [a, b], rows: rows,
+            resolutions: [7: .skip]
+        )
+
+        #expect(plan.matched.isEmpty)
+        #expect(plan.sheetRowsWithoutFile.count == 1)
+        // Both files fall through to orphans — operator chose to skip.
+        #expect(plan.filesNotInSheet.count == 2)
     }
 
     // MARK: helpers
 
-    private func file(_ stem: String, at path: String? = nil) -> SourceFile {
+    private func file(
+        _ stem: String,
+        at path: String? = nil,
+        base: String = "/tmp"
+    ) -> SourceFile {
         let url = URL(fileURLWithPath: path ?? "/tmp/\(stem).ai")
-        return SourceFile(url: url, nameStem: stem, relativePath: "\(stem).ai")
+        return SourceFile(
+            url: url,
+            nameStem: stem,
+            relativePath: "\(stem).ai",
+            baseFolder: URL(fileURLWithPath: base)
+        )
     }
 }

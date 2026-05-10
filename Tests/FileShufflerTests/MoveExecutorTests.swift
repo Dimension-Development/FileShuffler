@@ -13,12 +13,12 @@ struct MoveExecutorTests {
         try await withTempBase { base in
             let src = try makeFile(at: base.appendingPathComponent("source/a.ai"))
             let match = Match(
-                source: SourceFile(url: src, nameStem: "a", relativePath: "source/a.ai"),
+                source: SourceFile(url: src, nameStem: "a", relativePath: "source/a.ai", baseFolder: base),
                 row: MappingRow(id: 0, fileName: "a", folderName: "Material One"),
                 normalised: false
             )
             let result = await MoveExecutor.apply(
-                matches: [match], baseFolder: base, callbacks: .silent
+                matches: [match], destinationFolder: base, callbacks: .silent
             )
             #expect(result.moved.count == 1)
             #expect(result.errors.isEmpty)
@@ -34,7 +34,7 @@ struct MoveExecutorTests {
             let src = try makeFile(at: base.appendingPathComponent("source/a.ai"), contents: "new")
             let dst = try makeFile(at: base.appendingPathComponent("Material One/a.ai"), contents: "existing")
             let match = Match(
-                source: SourceFile(url: src, nameStem: "a", relativePath: "source/a.ai"),
+                source: SourceFile(url: src, nameStem: "a", relativePath: "source/a.ai", baseFolder: base),
                 row: MappingRow(id: 0, fileName: "a", folderName: "Material One"),
                 normalised: false
             )
@@ -43,7 +43,7 @@ struct MoveExecutorTests {
                 onCollision: { _, _ in .skip(forAll: false) }
             )
             let result = await MoveExecutor.apply(
-                matches: [match], baseFolder: base, callbacks: callbacks
+                matches: [match], destinationFolder: base, callbacks: callbacks
             )
             #expect(result.moved.isEmpty)
             #expect(result.skipped.count == 1)
@@ -61,7 +61,7 @@ struct MoveExecutorTests {
             let src = try makeFile(at: base.appendingPathComponent("source/a.ai"), contents: "new")
             let dst = try makeFile(at: base.appendingPathComponent("Material One/a.ai"), contents: "existing")
             let match = Match(
-                source: SourceFile(url: src, nameStem: "a", relativePath: "source/a.ai"),
+                source: SourceFile(url: src, nameStem: "a", relativePath: "source/a.ai", baseFolder: base),
                 row: MappingRow(id: 0, fileName: "a", folderName: "Material One"),
                 normalised: false
             )
@@ -70,7 +70,7 @@ struct MoveExecutorTests {
                 onCollision: { _, _ in .replace(forAll: false) }
             )
             let result = await MoveExecutor.apply(
-                matches: [match], baseFolder: base, callbacks: callbacks
+                matches: [match], destinationFolder: base, callbacks: callbacks
             )
             #expect(result.moved.count == 1)
             let final = try String(contentsOf: dst, encoding: .utf8)
@@ -88,9 +88,9 @@ struct MoveExecutorTests {
             _ = try makeFile(at: base.appendingPathComponent("M/b.ai"), contents: "oldB")
 
             let matches = [
-                Match(source: SourceFile(url: s1, nameStem: "a", relativePath: "src/a.ai"),
+                Match(source: SourceFile(url: s1, nameStem: "a", relativePath: "src/a.ai", baseFolder: base),
                       row: MappingRow(id: 0, fileName: "a", folderName: "M"), normalised: false),
-                Match(source: SourceFile(url: s2, nameStem: "b", relativePath: "src/b.ai"),
+                Match(source: SourceFile(url: s2, nameStem: "b", relativePath: "src/b.ai", baseFolder: base),
                       row: MappingRow(id: 1, fileName: "b", folderName: "M"), normalised: false),
             ]
             // Counter so we can assert we were only asked once.
@@ -104,7 +104,7 @@ struct MoveExecutorTests {
                 }
             )
             let result = await MoveExecutor.apply(
-                matches: matches, baseFolder: base, callbacks: callbacks
+                matches: matches, destinationFolder: base, callbacks: callbacks
             )
             #expect(result.moved.count == 2)
             await #expect(counter.n == 1, "executor should only prompt once when policy goes sticky")
@@ -119,9 +119,9 @@ struct MoveExecutorTests {
             let s2 = try makeFile(at: base.appendingPathComponent("src/b.ai"))
 
             let matches = [
-                Match(source: SourceFile(url: s1, nameStem: "a", relativePath: "src/a.ai"),
+                Match(source: SourceFile(url: s1, nameStem: "a", relativePath: "src/a.ai", baseFolder: base),
                       row: MappingRow(id: 0, fileName: "a", folderName: "M"), normalised: false),
-                Match(source: SourceFile(url: s2, nameStem: "b", relativePath: "src/b.ai"),
+                Match(source: SourceFile(url: s2, nameStem: "b", relativePath: "src/b.ai", baseFolder: base),
                       row: MappingRow(id: 1, fileName: "b", folderName: "M"), normalised: false),
             ]
             let callbacks = MoveExecutorCallbacks(
@@ -129,7 +129,7 @@ struct MoveExecutorTests {
                 onCollision: { _, _ in .cancel }
             )
             let result = await MoveExecutor.apply(
-                matches: matches, baseFolder: base, callbacks: callbacks
+                matches: matches, destinationFolder: base, callbacks: callbacks
             )
             #expect(result.stoppedEarly)
             #expect(result.moved.isEmpty)
@@ -143,12 +143,12 @@ struct MoveExecutorTests {
         try await withTempBase { base in
             let src = try makeFile(at: base.appendingPathComponent("source/a.ai"), contents: "hello")
             let match = Match(
-                source: SourceFile(url: src, nameStem: "a", relativePath: "source/a.ai"),
+                source: SourceFile(url: src, nameStem: "a", relativePath: "source/a.ai", baseFolder: base),
                 row: MappingRow(id: 0, fileName: "a", folderName: "Material One"),
                 normalised: false
             )
             let result = await MoveExecutor.apply(
-                matches: [match], baseFolder: base, callbacks: .silent
+                matches: [match], destinationFolder: base, callbacks: .silent
             )
             #expect(result.moved.count == 1)
 
@@ -167,9 +167,9 @@ struct MoveExecutorTests {
             let s1 = try makeFile(at: base.appendingPathComponent("src/a.ai"))
             let s2 = try makeFile(at: base.appendingPathComponent("src/b.ai"))
             let matches = [
-                Match(source: SourceFile(url: s1, nameStem: "a", relativePath: "src/a.ai"),
+                Match(source: SourceFile(url: s1, nameStem: "a", relativePath: "src/a.ai", baseFolder: base),
                       row: MappingRow(id: 0, fileName: "a", folderName: "M"), normalised: false),
-                Match(source: SourceFile(url: s2, nameStem: "b", relativePath: "src/b.ai"),
+                Match(source: SourceFile(url: s2, nameStem: "b", relativePath: "src/b.ai", baseFolder: base),
                       row: MappingRow(id: 1, fileName: "b", folderName: "M"), normalised: false),
             ]
             actor Capture { var ticks: [MoveProgress] = []; func add(_ p: MoveProgress) { ticks.append(p) } }
@@ -178,7 +178,7 @@ struct MoveExecutorTests {
                 onProgress: { p in await capture.add(p) },
                 onCollision: { _, _ in .skip(forAll: false) }
             )
-            _ = await MoveExecutor.apply(matches: matches, baseFolder: base, callbacks: callbacks)
+            _ = await MoveExecutor.apply(matches: matches, destinationFolder: base, callbacks: callbacks)
             await #expect(capture.ticks.last?.done == 2)
             await #expect(capture.ticks.last?.total == 2)
         }

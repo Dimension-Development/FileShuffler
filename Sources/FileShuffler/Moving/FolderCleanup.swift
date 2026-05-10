@@ -31,29 +31,41 @@ enum FolderCleanup {
     /// folder full of just that is still empty for our purposes.
     private static let ignorableNames: Set<String> = [".DS_Store"]
 
-    /// Build the candidate list from a journal of completed moves.
-    static func candidates(from moves: [Move], baseFolder: URL) -> [EmptyFolderCandidate] {
-        let stdBase = baseFolder.standardizedFileURL
-        let basePath = stdBase.path
+    /// Build the candidate list from a journal of completed moves. With
+    /// multiple source roots in play, each source has its own "don't
+    /// touch the root" guard and its own relative-path frame for display.
+    /// A parent folder that doesn't sit under any of the supplied sources
+    /// (rare, but possible if the operator removed a source mid-job)
+    /// falls back to its own last path component for display.
+    static func candidates(from moves: [Move], sourceFolders: [URL]) -> [EmptyFolderCandidate] {
+        let stdRoots = sourceFolders.map { $0.standardizedFileURL }
+        let rootSet = Set(stdRoots)
         var parents = Set<URL>()
         for move in moves {
             parents.insert(move.src.deletingLastPathComponent().standardizedFileURL)
         }
-        // Never propose to delete the base folder itself, even if it's empty.
-        parents.remove(stdBase)
+        // Never propose to delete one of the source roots itself, even if
+        // an apply emptied it completely.
+        parents.subtract(rootSet)
 
         var out: [EmptyFolderCandidate] = []
         for url in parents where isEmptyExceptIgnorable(url) {
-            let rel: String
-            if url.path.hasPrefix(basePath + "/") {
-                rel = String(url.path.dropFirst(basePath.count + 1))
-            } else {
-                rel = url.lastPathComponent
-            }
+            let rel = relativePath(of: url, under: stdRoots) ?? url.lastPathComponent
             out.append(EmptyFolderCandidate(url: url, relativePath: rel))
         }
         // Stable order so the UI doesn't flicker between runs.
         return out.sorted { $0.relativePath < $1.relativePath }
+    }
+
+    /// Relative path of `url` under whichever of `roots` contains it.
+    /// Multi-source jobs prefix the source folder name so two empty
+    /// folders called "Top Shelf" under different sources stay distinct.
+    private static func relativePath(of url: URL, under roots: [URL]) -> String? {
+        for root in roots where url.path.hasPrefix(root.path + "/") {
+            let tail = String(url.path.dropFirst(root.path.count + 1))
+            return roots.count > 1 ? "\(root.lastPathComponent)/\(tail)" : tail
+        }
+        return nil
     }
 
     /// True when the directory contains nothing, or only files we consider

@@ -20,7 +20,7 @@ struct FolderCleanupTests {
                 dst: base.appendingPathComponent("Material/file.ai")
             )
 
-            let candidates = FolderCleanup.candidates(from: [move], baseFolder: base)
+            let candidates = FolderCleanup.candidates(from: [move], sourceFolders: [base])
             #expect(candidates.count == 1)
             #expect(candidates.first?.relativePath == "261144 - Arencia")
         }
@@ -37,7 +37,7 @@ struct FolderCleanupTests {
                 src: folder.appendingPathComponent("artwork.ai"),
                 dst: base.appendingPathComponent("Material/artwork.ai")
             )
-            let candidates = FolderCleanup.candidates(from: [move], baseFolder: base)
+            let candidates = FolderCleanup.candidates(from: [move], sourceFolders: [base])
             #expect(candidates.count == 1)
         }
     }
@@ -54,7 +54,7 @@ struct FolderCleanupTests {
                 src: folder.appendingPathComponent("artwork.ai"),
                 dst: base.appendingPathComponent("Material/artwork.ai")
             )
-            let candidates = FolderCleanup.candidates(from: [move], baseFolder: base)
+            let candidates = FolderCleanup.candidates(from: [move], sourceFolders: [base])
             #expect(candidates.isEmpty, "should refuse to delete a folder with non-ignorable contents")
         }
     }
@@ -67,7 +67,7 @@ struct FolderCleanupTests {
                 src: base.appendingPathComponent("a.ai"),
                 dst: base.appendingPathComponent("Material/a.ai")
             )
-            let candidates = FolderCleanup.candidates(from: [move], baseFolder: base)
+            let candidates = FolderCleanup.candidates(from: [move], sourceFolders: [base])
             #expect(candidates.isEmpty)
         }
     }
@@ -97,14 +97,14 @@ struct FolderCleanupTests {
             try Data("hello".utf8).write(to: src)
 
             let match = Match(
-                source: SourceFile(url: src, nameStem: "art", relativePath: "brand-a/art.ai"),
+                source: SourceFile(url: src, nameStem: "art", relativePath: "brand-a/art.ai", baseFolder: base),
                 row: MappingRow(id: 0, fileName: "art", folderName: "Material"),
                 normalised: false
             )
-            let result = await MoveExecutor.apply(matches: [match], baseFolder: base, callbacks: .silent)
+            let result = await MoveExecutor.apply(matches: [match], destinationFolder: base, callbacks: .silent)
             #expect(result.moved.count == 1)
 
-            let candidates = FolderCleanup.candidates(from: result.moved, baseFolder: base)
+            let candidates = FolderCleanup.candidates(from: result.moved, sourceFolders: [base])
             let cleanup = FolderCleanup.cleanUp(candidates)
             #expect(cleanup.deleted.count == 1)
             #expect(!FileManager.default.fileExists(atPath: folder.path))

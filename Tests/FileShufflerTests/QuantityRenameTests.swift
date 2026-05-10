@@ -127,11 +127,11 @@ struct QuantityRenameTests {
         try Data("hello".utf8).write(to: src)
 
         let match = Match(
-            source: SourceFile(url: src, nameStem: "foo", relativePath: "source/foo.ai"),
+            source: SourceFile(url: src, nameStem: "foo", relativePath: "source/foo.ai", baseFolder: base),
             row: MappingRow(id: 0, fileName: "foo", folderName: "Material", quantity: "30"),
             normalised: false
         )
-        let result = await MoveExecutor.apply(matches: [match], baseFolder: base, callbacks: .silent)
+        let result = await MoveExecutor.apply(matches: [match], destinationFolder: base, callbacks: .silent)
         #expect(result.moved.count == 1)
 
         let renamed = base.appendingPathComponent("Material/foo_x30.ai")
@@ -145,7 +145,7 @@ struct QuantityRenameTests {
         let filename = ext.isEmpty ? stem : "\(stem).\(ext)"
         let url = URL(fileURLWithPath: "/tmp/\(filename)")
         return Match(
-            source: SourceFile(url: url, nameStem: stem, relativePath: filename),
+            source: SourceFile(url: url, nameStem: stem, relativePath: filename, baseFolder: URL(fileURLWithPath: "/tmp")),
             row: MappingRow(id: 0, fileName: stem, folderName: "X", quantity: quantity),
             normalised: false
         )

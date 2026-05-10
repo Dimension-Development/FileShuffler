@@ -17,7 +17,11 @@ let package = Package(
         .executableTarget(
             name: "FileShuffler",
             dependencies: ["CoreXLSX"],
-            path: "Sources/FileShuffler"
+            path: "Sources/FileShuffler",
+            // NetFS.framework backs `NetFSMounter`'s `NetFSMountURLSync`
+            // call — needed to auto-mount the DimensionHub share when a
+            // pasted path resolves under it but the volume isn't there.
+            linkerSettings: [.linkedFramework("NetFS")]
         ),
         .testTarget(
             name: "FileShufflerTests",

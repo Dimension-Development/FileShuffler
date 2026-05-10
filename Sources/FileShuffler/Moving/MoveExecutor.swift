@@ -24,12 +24,14 @@ struct MoveExecutorCallbacks: Sendable {
 /// can leave stale state in the other app.
 enum MoveExecutor {
 
-    /// Apply a list of matches against `baseFolder`. Each match becomes a
-    /// move from its source URL into `baseFolder/destination/filename`.
-    /// Destination folders are created on demand.
+    /// Apply a list of matches against `destinationFolder`. Each match
+    /// becomes a move from its source URL (which may live under any of
+    /// the operator's source folders) into
+    /// `destinationFolder/<row.folderName>/<filename>`. Destination
+    /// subfolders are created on demand.
     static func apply(
         matches: [Match],
-        baseFolder: URL,
+        destinationFolder: URL,
         callbacks: MoveExecutorCallbacks
     ) async -> MoveResult {
         var moved: [Move] = []
@@ -45,7 +47,7 @@ enum MoveExecutor {
                 MoveProgress(total: matches.count, done: i, current: match.source.relativePath)
             )
 
-            let destDir = baseFolder.appendingPathComponent(match.destination, isDirectory: true)
+            let destDir = destinationFolder.appendingPathComponent(match.destination, isDirectory: true)
             do {
                 try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
             } catch {

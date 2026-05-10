@@ -165,7 +165,8 @@ struct IdempotentRenameTests {
         SourceFile(
             url: URL(fileURLWithPath: "/tmp/\(stem).pdf"),
             nameStem: stem,
-            relativePath: "\(stem).pdf"
+            relativePath: "\(stem).pdf",
+            baseFolder: URL(fileURLWithPath: "/tmp")
         )
     }
 
@@ -178,7 +179,10 @@ struct IdempotentRenameTests {
         let filename = ext.isEmpty ? stem : "\(stem).\(ext)"
         let url = URL(fileURLWithPath: "/tmp/\(filename)")
         return Match(
-            source: SourceFile(url: url, nameStem: stem, relativePath: filename),
+            source: SourceFile(
+                url: url, nameStem: stem, relativePath: filename,
+                baseFolder: URL(fileURLWithPath: "/tmp")
+            ),
             row: MappingRow(id: 0, fileName: stem, folderName: "X", quantity: quantity),
             normalised: stemMatchedAfterStrip,
             stemMatchedAfterStrip: stemMatchedAfterStrip

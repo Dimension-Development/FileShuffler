@@ -14,7 +14,14 @@ enum ApplyPhase: Equatable {
 }
 
 struct ContentView: View {
-    @State private var baseFolder: URL?
+    /// Source roots the operator added — works orders sometimes hand the
+    /// operator multiple server links pointing at different parts of the
+    /// same job. Order is the order added (first = default destination).
+    @State private var sourceFolders: [URL] = []
+    /// Where moves land. Defaults to the first source added; can be
+    /// re-pointed anywhere (other share, local disk) by the operator.
+    @State private var destinationFolder: URL?
+
     @State private var sheetURL: URL?
     @State private var sheetTable: SpreadsheetTable?
     @State private var fileColumn: String = ""
@@ -24,6 +31,10 @@ struct ContentView: View {
     @State private var quantityColumn: String = ContentView.noneTag
     @State private var files: [SourceFile] = []
     @State private var plan: MatchPlan?
+    /// Operator's pick per conflicted row (key = `MappingRow.id`). Persists
+    /// across plan rebuilds so editing column choices doesn't blow away
+    /// resolutions; `reset` and `loadProject` reset it explicitly.
+    @State private var conflictResolutions: [Int: MatchEngine.ConflictResolution] = [:]
     @State private var error: String?
 
     static let noneTag = "(none)"
@@ -45,10 +56,26 @@ struct ContentView: View {
     @State private var cleanupCandidates: [EmptyFolderCandidate]?
     @State private var cleanupResult: CleanupResult?
 
+    // M3 — paste-link / clipboard-suggestion state. Two paste fields now:
+    // one for adding sources (additive), one for setting the destination
+    // (single value). The clipboard banner only suggests sources, since
+    // works-order links are the source paths.
+    @State private var pastedSource: String = ""
+    @State private var pastedDestination: String = ""
+    @State private var clipboardSuggestion: ClipboardSuggestion?
+    /// Operator dismissed the banner — don't re-show until app relaunch.
+    @State private var clipboardBannerDismissed: Bool = false
+    /// Previous pasteboard `changeCount` so we can ignore a clipboard whose
+    /// contents we've already evaluated (and possibly dismissed).
+    @State private var lastClipboardChangeCount: Int = -1
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
             Divider()
+            if clipboardSuggestion != nil && !clipboardBannerDismissed {
+                clipboardBanner
+            }
             inputs
             Divider()
             content
@@ -60,7 +87,11 @@ struct ContentView: View {
             footer
         }
         .padding(20)
-        .frame(minWidth: 760, minHeight: 560)
+        .frame(minWidth: 760, minHeight: 600)
+        .onAppear { refreshClipboardSuggestion() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshClipboardSuggestion()
+        }
         .alert(
             "Move \(plan?.matched.count ?? 0) files?",
             isPresented: $confirmingApply,
@@ -69,7 +100,7 @@ struct ContentView: View {
             Button("Move", action: startApply)
             Button("Cancel", role: .cancel, action: {})
         } message: { _ in
-            Text("Files will move from their current locations into the destination folders shown in the plan. Files not listed in the sheet are left in place.")
+            Text("Files will move from their source locations into the destination folders shown in the plan, under \(destinationFolder?.lastPathComponent ?? "the destination folder"). Files not listed in the sheet are left in place.")
         }
         .alert(
             "“\(pendingCollision?.destination.lastPathComponent ?? "")” already exists",
@@ -91,6 +122,16 @@ struct ContentView: View {
 
     // MARK: - Footer
 
+    /// Apply requires at least one match, a destination, and zero unresolved
+    /// conflicts. Conflicts are deliberately hard-blocking — silent picks
+    /// here would defeat the whole point of the app.
+    private var canApply: Bool {
+        guard let plan, !plan.matched.isEmpty, destinationFolder != nil else {
+            return false
+        }
+        return plan.conflicts.isEmpty
+    }
+
     private var footer: some View {
         HStack {
             Spacer()
@@ -99,7 +140,7 @@ struct ContentView: View {
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
-            .disabled(plan?.matched.isEmpty ?? true)
+            .disabled(!canApply)
         }
     }
 
@@ -186,7 +227,7 @@ struct ContentView: View {
                 .keyboardShortcut("o", modifiers: .command)
             Button("Save…", action: saveProject)
                 .keyboardShortcut("s", modifiers: .command)
-                .disabled(baseFolder == nil || sheetURL == nil)
+                .disabled(sourceFolders.isEmpty || destinationFolder == nil || sheetURL == nil)
             if plan != nil {
                 Button("New job", action: reset)
             }
@@ -197,12 +238,20 @@ struct ContentView: View {
 
     private var inputs: some View {
         VStack(alignment: .leading, spacing: 10) {
-            DropTarget(
-                title: "Base folder",
-                value: baseFolder?.path ?? "Drop a folder here, or click Browse…",
-                systemImage: "folder",
-                trailing: { Button("Browse…", action: pickFolder) },
-                onURL: setBase
+            SourcesSection(
+                sources: sourceFolders,
+                pasted: $pastedSource,
+                onSubmit: { Task { await resolveAndAddSource(from: pastedSource) } },
+                onBrowse: pickSourceFolder,
+                onURL: { url in Task { await resolveAndAddSource(from: url.path) } },
+                onRemove: removeSource
+            )
+            DestinationRow(
+                destination: destinationFolder,
+                pasted: $pastedDestination,
+                onSubmit: { Task { await resolveAndSetDestination(from: pastedDestination) } },
+                onBrowse: pickDestinationFolder,
+                onURL: { url in Task { await resolveAndSetDestination(from: url.path) } }
             )
             DropTarget(
                 title: "Spreadsheet",
@@ -255,6 +304,9 @@ struct ContentView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     matchedSection(plan)
+                    if !plan.conflicts.isEmpty {
+                        conflictsSection(plan)
+                    }
                     sheetOrphansSection(plan)
                     fileOrphansSection(plan)
                 }
@@ -265,13 +317,17 @@ struct ContentView: View {
                 Image(systemName: "arrow.triangle.branch")
                     .font(.system(size: 36))
                     .foregroundStyle(.secondary)
-                Text("Drop a job folder and its spreadsheet to see the plan.")
+                Text("Add a source folder, a destination, and a spreadsheet to see the plan.")
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity)
             Spacer()
         }
     }
+
+    /// Toggle prefix display only when there's more than one source — the
+    /// extra prefix is just visual noise on single-source jobs.
+    private var showsBaseFolderPrefix: Bool { sourceFolders.count > 1 }
 
     private func matchedSection(_ plan: MatchPlan) -> some View {
         let grouped = Dictionary(grouping: plan.matched, by: { $0.destination })
@@ -288,7 +344,7 @@ struct ContentView: View {
                                     Image(systemName: m.normalised ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                                         .foregroundStyle(m.normalised ? .orange : .green)
                                         .help(m.normalised ? "Match required normalisation (e.g. extra whitespace)" : "Exact match")
-                                    Text(m.source.relativePath)
+                                    Text(m.source.displayPath(showingBase: showsBaseFolderPrefix))
                                         .font(.callout.monospaced())
                                         .lineLimit(1)
                                         .truncationMode(.middle)
@@ -321,6 +377,52 @@ struct ContentView: View {
         }
     }
 
+    private func conflictsSection(_ plan: MatchPlan) -> some View {
+        planSection(
+            title: "Conflicts — pick one per row",
+            count: plan.conflicts.count,
+            tint: .red
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(plan.conflicts) { conflict in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(conflict.row.fileName).font(.callout.monospaced())
+                            Image(systemName: "arrow.right").foregroundStyle(.secondary)
+                            Text(conflict.row.folderName).font(.callout)
+                            Spacer()
+                            Button("Skip this row") {
+                                resolveConflict(rowID: conflict.row.id, with: .skip)
+                            }
+                            .controlSize(.small)
+                        }
+                        ForEach(conflict.candidates, id: \.id) { candidate in
+                            Button {
+                                resolveConflict(
+                                    rowID: conflict.row.id,
+                                    with: .use(candidate.url)
+                                )
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "circle")
+                                        .foregroundStyle(.secondary)
+                                    Text(candidate.displayPath(showingBase: showsBaseFolderPrefix))
+                                        .font(.callout.monospaced())
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Spacer()
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.leading, 16)
+                        }
+                    }
+                    .padding(.bottom, 4)
+                }
+            }
+        }
+    }
+
     private func sheetOrphansSection(_ plan: MatchPlan) -> some View {
         planSection(title: "Sheet rows with no file on disk", count: plan.sheetRowsWithoutFile.count, tint: .orange) {
             if plan.sheetRowsWithoutFile.isEmpty {
@@ -344,7 +446,8 @@ struct ContentView: View {
                 Text("None.").foregroundStyle(.secondary)
             } else {
                 ForEach(plan.filesNotInSheet, id: \.id) { f in
-                    Text(f.relativePath).font(.callout.monospaced())
+                    Text(f.displayPath(showingBase: showsBaseFolderPrefix))
+                        .font(.callout.monospaced())
                 }
             }
         }
@@ -369,7 +472,8 @@ struct ContentView: View {
     // MARK: - Actions
 
     private func reset() {
-        baseFolder = nil
+        sourceFolders = []
+        destinationFolder = nil
         sheetURL = nil
         sheetTable = nil
         fileColumn = ""
@@ -377,6 +481,7 @@ struct ContentView: View {
         quantityColumn = Self.noneTag
         files = []
         plan = nil
+        conflictResolutions = [:]
         error = nil
         currentProjectURL = nil
         auditLog = nil
@@ -385,12 +490,240 @@ struct ContentView: View {
         cleanupResult = nil
     }
 
-    private func pickFolder() {
+    private func pickSourceFolder() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url { setBase(url) }
+        if panel.runModal() == .OK, let url = panel.url {
+            Task { await applyAddSource(url) }
+        }
+    }
+
+    private func pickDestinationFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url {
+            setDestination(url)
+        }
+    }
+
+    // MARK: - Paste-link / clipboard suggestion
+
+    /// Banner shown above the inputs when the pasteboard contains a path
+    /// the source-policy parser accepts. The operator can accept it (zero
+    /// clicks after launch), dismiss it for this session, or just ignore
+    /// it and type into the paste field directly. Banner only suggests
+    /// sources because works-order links are always source paths.
+    private var clipboardBanner: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "doc.on.clipboard")
+                .font(.title3)
+                .foregroundStyle(.tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Add source folder from clipboard?")
+                    .font(.callout).bold()
+                Text(clipboardSuggestion?.folderName ?? "")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+            Button("Add as source") {
+                Task { await acceptClipboardSuggestion() }
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.return, modifiers: [])
+            Button("Dismiss") {
+                clipboardBannerDismissed = true
+                clipboardSuggestion = nil
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.accentColor.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.accentColor.opacity(0.4), lineWidth: 1)
+        )
+    }
+
+    /// Read the pasteboard, run it through the source-policy parser, and
+    /// surface a suggestion when it's something we can act on. Filters out
+    /// the share root itself and other shallow paths so we don't pester
+    /// the operator with "use folder DimensionHub?".
+    private func refreshClipboardSuggestion() {
+        if clipboardBannerDismissed { return }
+        let pb = NSPasteboard.general
+        // Skip work when the clipboard hasn't changed since last check —
+        // re-evaluating the same string can't produce a new suggestion.
+        guard pb.changeCount != lastClipboardChangeCount else { return }
+        lastClipboardChangeCount = pb.changeCount
+
+        guard let raw = pb.string(forType: .string) else {
+            clipboardSuggestion = nil
+            return
+        }
+        let candidate: URL
+        switch PathNormaliser.parseSource(raw) {
+        case .onShare(let url): candidate = url
+        case .local(let url):   candidate = url
+        case .wrongShare, .unrecognised:
+            clipboardSuggestion = nil
+            return
+        }
+        // /Volumes/DimensionHub/<one-segment> is 4 path components in URL
+        // terms ("/", "Volumes", "DimensionHub", segment) — anything
+        // shallower than that is almost certainly not a real job folder.
+        guard candidate.pathComponents.count >= 4 else {
+            clipboardSuggestion = nil
+            return
+        }
+        clipboardSuggestion = ClipboardSuggestion(
+            raw: raw,
+            folderName: candidate.lastPathComponent
+        )
+    }
+
+    private func acceptClipboardSuggestion() async {
+        guard let suggestion = clipboardSuggestion else { return }
+        clipboardSuggestion = nil
+        await resolveAndAddSource(from: suggestion.raw)
+    }
+
+    /// Source-side entry point. Used by the paste field, the clipboard
+    /// banner accept button, and the drop target. Routes through
+    /// `parseSource`, attempts to mount DimensionHub if needed, and
+    /// silently falls back to the parent folder when the string pointed
+    /// at a file (informing the operator inline).
+    @MainActor
+    private func resolveAndAddSource(from raw: String) async {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        switch PathNormaliser.parseSource(trimmed) {
+        case .unrecognised:
+            error = "Couldn't make sense of that path. Paste a folder link from the works order, drop a folder here, or click Browse."
+        case .wrongShare(let name):
+            error = "“\(name)” isn't a share I work with. Sources must be under DimensionHub or local folders. (Destinations can be anywhere.)"
+        case .local(let url), .onShare(let url):
+            if case .onShare = PathNormaliser.parseSource(trimmed) {
+                if !FileManager.default.fileExists(atPath: "/Volumes/" + PathNormaliser.canonicalShare) {
+                    do {
+                        try await NetFSMounter.ensureCanonicalShareMounted()
+                    } catch {
+                        self.error = "Couldn't connect to the DimensionHub server. Open it once in Finder, then try again."
+                        return
+                    }
+                }
+            }
+            await applyAddSource(url)
+        }
+    }
+
+    /// Destination-side entry point. Same shape as the source resolver,
+    /// but uses the permissive `parseDestination` since the operator may
+    /// route output anywhere — including other shares.
+    @MainActor
+    private func resolveAndSetDestination(from raw: String) async {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        switch PathNormaliser.parseDestination(trimmed) {
+        case .unrecognised:
+            error = "Couldn't make sense of that path. Paste a folder link, drop a folder here, or click Browse."
+        case .ok(let url):
+            // Only auto-mount the canonical share — other shares the
+            // operator must mount themselves via Finder, since we don't
+            // have credentials for them.
+            if url.path.hasPrefix("/Volumes/" + PathNormaliser.canonicalShare),
+               !FileManager.default.fileExists(atPath: "/Volumes/" + PathNormaliser.canonicalShare) {
+                do {
+                    try await NetFSMounter.ensureCanonicalShareMounted()
+                } catch {
+                    self.error = "Couldn't connect to the DimensionHub server. Open it once in Finder, then try again."
+                    return
+                }
+            }
+            await applySetDestination(url)
+        }
+    }
+
+    /// Validate the chosen URL exists, fall back to its parent if it
+    /// points at a file, then append it to `sourceFolders` (refusing
+    /// duplicates so the operator can't accidentally scan one tree
+    /// twice). Auto-sets the destination to the new source if it's the
+    /// first one — a no-op for subsequent additions.
+    @MainActor
+    private func applyAddSource(_ url: URL) async {
+        guard let folder = await resolvedFolder(at: url) else { return }
+        let std = folder.standardizedFileURL.resolvingSymlinksInPath()
+        if sourceFolders.contains(where: { $0.standardizedFileURL.resolvingSymlinksInPath() == std }) {
+            error = "“\(folder.lastPathComponent)” is already in the sources list."
+            return
+        }
+        sourceFolders.append(std)
+        if destinationFolder == nil {
+            destinationFolder = std
+        }
+        pastedSource = ""
+        rescan()
+    }
+
+    /// Single-value setter for the destination. Same file→folder fallback
+    /// as the source resolver.
+    @MainActor
+    private func applySetDestination(_ url: URL) async {
+        guard let folder = await resolvedFolder(at: url) else { return }
+        destinationFolder = folder.standardizedFileURL.resolvingSymlinksInPath()
+        pastedDestination = ""
+        // Destination doesn't affect the scan or match plan — only the
+        // apply step uses it — so no rescan needed.
+        if error?.contains("doesn't exist") == true { error = nil }
+    }
+
+    /// File-vs-folder normalisation shared by the source and destination
+    /// pipelines. Returns `nil` if the path doesn't exist on disk; sets
+    /// `error` on the way out so the caller can simply early-return.
+    @MainActor
+    private func resolvedFolder(at url: URL) async -> URL? {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else {
+            error = "“\(url.lastPathComponent)” doesn't exist on disk."
+            return nil
+        }
+        if isDir.boolValue {
+            error = nil
+            return url
+        }
+        let parent = url.deletingLastPathComponent()
+        error = "That link pointed at a file. Using the parent folder “\(parent.lastPathComponent)”."
+        return parent
+    }
+
+    private func removeSource(_ url: URL) {
+        sourceFolders.removeAll { $0 == url }
+        // If the removed source was also the destination, pick the next
+        // remaining source as a fallback (or clear destination if none).
+        if destinationFolder == url {
+            destinationFolder = sourceFolders.first
+        }
+        // Conflict resolutions referencing a removed source's files will
+        // fall back to "no resolution" naturally on rebuild — those rows
+        // re-appear as conflicts (or as solo matches if only one
+        // candidate remains).
+        rescan()
+    }
+
+    private func setDestination(_ url: URL) {
+        destinationFolder = url.standardizedFileURL.resolvingSymlinksInPath()
     }
 
     private func pickSheet() {
@@ -402,11 +735,6 @@ struct ContentView: View {
         if let xlsx = UTType(filenameExtension: "xlsx") { types.append(xlsx) }
         panel.allowedContentTypes = types
         if panel.runModal() == .OK, let url = panel.url { setSheet(url) }
-    }
-
-    private func setBase(_ url: URL) {
-        baseFolder = url
-        rescan()
     }
 
     private func setSheet(_ url: URL) {
@@ -428,10 +756,14 @@ struct ContentView: View {
     }
 
     private func rescan() {
-        guard let baseFolder else { return }
+        guard !sourceFolders.isEmpty else {
+            files = []
+            plan = nil
+            return
+        }
         do {
             let exclude: Set<URL> = sheetURL.map { [$0.standardizedFileURL.resolvingSymlinksInPath()] } ?? []
-            files = try FolderScanner.scan(base: baseFolder, excluding: exclude)
+            files = try FolderScanner.scan(bases: sourceFolders, excluding: exclude)
             rebuildPlan()
         } catch {
             self.error = error.localizedDescription
@@ -450,7 +782,10 @@ struct ContentView: View {
                 folderColumn: folderColumn,
                 quantityColumn: qty
             )
-            plan = MatchEngine.plan(files: files, rows: rows)
+            plan = MatchEngine.plan(
+                files: files, rows: rows,
+                resolutions: conflictResolutions
+            )
             error = nil
         } catch {
             plan = nil
@@ -458,11 +793,17 @@ struct ContentView: View {
         }
     }
 
+    private func resolveConflict(rowID: Int, with resolution: MatchEngine.ConflictResolution) {
+        conflictResolutions[rowID] = resolution
+        rebuildPlan()
+    }
+
     // MARK: - Apply / Undo
 
     private func startApply() {
-        guard let baseFolder, let plan, !plan.matched.isEmpty else { return }
+        guard let destinationFolder, let plan, !plan.matched.isEmpty else { return }
         let matches = plan.matched
+        let sources = sourceFolders
         applyPhase = .applying
         applyProgress = MoveProgress(total: matches.count, done: 0, current: "")
         applyResult = nil
@@ -488,7 +829,7 @@ struct ContentView: View {
             )
             let result = await MoveExecutor.apply(
                 matches: matches,
-                baseFolder: baseFolder,
+                destinationFolder: destinationFolder,
                 callbacks: callbacks
             )
             await MainActor.run {
@@ -497,7 +838,8 @@ struct ContentView: View {
                     auditLog = AuditLog(
                         from: result,
                         startedAt: started,
-                        baseFolder: baseFolder,
+                        sourceFolders: sources,
+                        destinationFolder: destinationFolder,
                         sheetURL: sheetURL
                     )
                 }
@@ -505,7 +847,7 @@ struct ContentView: View {
                 // apply settles, so the result sheet can offer Clean up.
                 cleanupCandidates = FolderCleanup.candidates(
                     from: result.moved,
-                    baseFolder: baseFolder
+                    sourceFolders: sources
                 )
                 applyPhase = .completed
             }
@@ -575,20 +917,22 @@ struct ContentView: View {
     // MARK: - Project save / load
 
     private func saveProject() {
-        guard let baseFolder, let sheetURL else { return }
+        guard !sourceFolders.isEmpty, let destinationFolder, let sheetURL else { return }
         let panel = NSSavePanel()
         if let xt = UTType(filenameExtension: "shuffle") {
             panel.allowedContentTypes = [xt]
         }
         panel.nameFieldStringValue = currentProjectURL?.deletingPathExtension().lastPathComponent
-            ?? baseFolder.lastPathComponent
+            ?? destinationFolder.lastPathComponent
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let project = ShuffleProject(
-            baseFolderPath: baseFolder.path,
+            sourceFolderPaths: sourceFolders.map(\.path),
+            destinationPath: destinationFolder.path,
             sheetPath: sheetURL.path,
             fileColumn: fileColumn,
             folderColumn: folderColumn,
             quantityColumn: quantityColumn == Self.noneTag ? nil : quantityColumn,
+            conflictResolutions: serialiseResolutions(conflictResolutions),
             auditLog: auditLog
         )
         do {
@@ -617,7 +961,6 @@ struct ContentView: View {
             let project = try ShuffleProjectIO.load(from: url)
             // Restore inputs first, then load the spreadsheet so column
             // pickers populate before we apply the saved column choices.
-            let restoredBase = URL(fileURLWithPath: project.baseFolderPath)
             let restoredSheet = URL(fileURLWithPath: project.sheetPath)
             sheetURL = restoredSheet
             let table = try SpreadsheetReader.read(restoredSheet)
@@ -625,7 +968,9 @@ struct ContentView: View {
             fileColumn = project.fileColumn
             folderColumn = project.folderColumn
             quantityColumn = project.quantityColumn ?? Self.noneTag
-            baseFolder = restoredBase
+            sourceFolders = project.sourceFolderPaths.map { URL(fileURLWithPath: $0) }
+            destinationFolder = URL(fileURLWithPath: project.destinationPath)
+            conflictResolutions = deserialiseResolutions(project.conflictResolutions)
             auditLog = project.auditLog
             currentProjectURL = url
             error = nil
@@ -633,6 +978,39 @@ struct ContentView: View {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    // MARK: - Resolution (de)serialisation
+
+    /// Convert the in-memory `[Int: ConflictResolution]` to the JSON-friendly
+    /// `[String: ResolutionRecord]` shape stored in `.shuffle` files.
+    private func serialiseResolutions(_ res: [Int: MatchEngine.ConflictResolution]) -> [String: ResolutionRecord] {
+        var out: [String: ResolutionRecord] = [:]
+        for (id, value) in res {
+            switch value {
+            case .skip:
+                out[String(id)] = ResolutionRecord(kind: "skip", chosenPath: nil)
+            case .use(let url):
+                out[String(id)] = ResolutionRecord(kind: "use", chosenPath: url.path)
+            }
+        }
+        return out
+    }
+
+    private func deserialiseResolutions(_ res: [String: ResolutionRecord]) -> [Int: MatchEngine.ConflictResolution] {
+        var out: [Int: MatchEngine.ConflictResolution] = [:]
+        for (key, record) in res {
+            guard let id = Int(key) else { continue }
+            switch record.kind {
+            case "skip": out[id] = .skip
+            case "use":
+                if let path = record.chosenPath {
+                    out[id] = .use(URL(fileURLWithPath: path))
+                }
+            default: continue
+            }
+        }
+        return out
     }
 
     // MARK: - Audit log export
@@ -654,7 +1032,7 @@ struct ContentView: View {
 
     private func defaultLogFilename(for log: AuditLog) -> String {
         // e.g. "261144 — File Shuffler log — 2026-05-09.txt"
-        let folderName = (log.baseFolderPath as NSString).lastPathComponent
+        let folderName = (log.destinationPath as NSString).lastPathComponent
         let df = DateFormatter()
         df.dateFormat = "yyyy-MM-dd"
         return "\(folderName) — File Shuffler log — \(df.string(from: log.finishedAt))"
@@ -673,8 +1051,10 @@ struct ContentView: View {
     /// Extract page dimensions from every PDF/AI in the journal and write
     /// the report. Extraction happens on click (not at apply time) so the
     /// apply itself stays snappy on jobs where this report isn't needed.
+    /// Relative paths in the report are anchored to the destination —
+    /// that's where the moved files now live.
     private func exportSizesReport() {
-        guard let baseFolder, let result = applyResult else { return }
+        guard let destinationFolder, let result = applyResult else { return }
         let pdfURLs = result.moved
             .filter(Self.isPDFLike)
             .map(\.dst)
@@ -685,7 +1065,7 @@ struct ContentView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         let extracted = PDFSizeExtractor.extract(from: pdfURLs)
-        let report = SizesReport(baseFolder: baseFolder, files: extracted)
+        let report = SizesReport(baseFolder: destinationFolder, files: extracted)
         do {
             try report.csv().write(to: url, atomically: true, encoding: .utf8)
             error = nil
@@ -695,7 +1075,7 @@ struct ContentView: View {
     }
 
     private func defaultSizesFilename() -> String {
-        let folderName = baseFolder?.lastPathComponent ?? "FileShuffler"
+        let folderName = destinationFolder?.lastPathComponent ?? "FileShuffler"
         let df = DateFormatter()
         df.dateFormat = "yyyy-MM-dd"
         return "\(folderName) — sizes — \(df.string(from: Date()))"
@@ -707,6 +1087,181 @@ struct ContentView: View {
     private static func isPDFLike(_ move: Move) -> Bool {
         let ext = move.dst.pathExtension.lowercased()
         return ext == "pdf" || ext == "ai"
+    }
+}
+
+// MARK: - Clipboard suggestion model
+
+/// Snapshot of a pasteboard string the parser accepted. We keep the raw
+/// input verbatim (rather than the parsed URL) so the accept path runs
+/// through the same normalisation+mount pipeline as the manual paste —
+/// only one code path ever loads a base folder from a user-supplied
+/// string.
+fileprivate struct ClipboardSuggestion: Equatable {
+    let raw: String
+    let folderName: String
+}
+
+// MARK: - Sources section (multi-source list + add row)
+
+/// Multi-source list with an inline paste field for adding more. Each
+/// existing source shows as a removable row; the paste field is the
+/// primary "add a source" affordance, with Browse and folder-drop as
+/// secondary paths. Single-source jobs look almost identical to the v1
+/// Base folder row.
+fileprivate struct SourcesSection: View {
+    let sources: [URL]
+    @Binding var pasted: String
+    let onSubmit: () -> Void
+    let onBrowse: () -> Void
+    let onURL: (URL) -> Void
+    let onRemove: (URL) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "folder")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24)
+                Text(sources.count == 1 ? "Source" : "Sources")
+                    .font(.caption).foregroundStyle(.secondary)
+                if sources.count > 1 {
+                    Text("\(sources.count)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                }
+                Spacer()
+            }
+            ForEach(sources, id: \.self) { url in
+                HStack(spacing: 8) {
+                    Image(systemName: "doc.on.doc")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(url.lastPathComponent)
+                            .font(.callout).bold()
+                        Text(url.path)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer()
+                    Button(role: .destructive) {
+                        onRemove(url)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Remove this source")
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.gray.opacity(0.06))
+                )
+                .padding(.leading, 32)
+            }
+            PathPasteField(
+                placeholder: sources.isEmpty
+                    ? "Paste a server link, drop a folder, or click Browse…"
+                    : "Add another source — paste a server link, drop a folder, or click Browse…",
+                pasted: $pasted,
+                onSubmit: onSubmit,
+                onBrowse: onBrowse,
+                onURL: onURL
+            )
+            .padding(.leading, 32)
+        }
+    }
+}
+
+// MARK: - Destination row
+
+/// Single-value destination input. Mirrors the source paste-row visually
+/// but accepts any classification (other shares, local) since the
+/// operator may consolidate output anywhere.
+fileprivate struct DestinationRow: View {
+    let destination: URL?
+    @Binding var pasted: String
+    let onSubmit: () -> Void
+    let onBrowse: () -> Void
+    let onURL: (URL) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: "tray.and.arrow.down")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24)
+                Text("Destination").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+            }
+            PathPasteField(
+                placeholder: destination == nil
+                    ? "Paste a folder link, drop a folder, or click Browse…"
+                    : "Replace — paste a folder link, drop a folder, or click Browse…",
+                pasted: $pasted,
+                onSubmit: onSubmit,
+                onBrowse: onBrowse,
+                onURL: onURL
+            )
+            .padding(.leading, 32)
+            if let destination {
+                Text(destination.path)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.leading, 32)
+            }
+        }
+    }
+}
+
+// MARK: - Reusable paste field with drop + browse
+
+/// A single inline TextField that accepts pasted server links, dropped
+/// folders, or a Browse-button selection. Used for both source and
+/// destination inputs so the affordance is consistent.
+fileprivate struct PathPasteField: View {
+    let placeholder: String
+    @Binding var pasted: String
+    let onSubmit: () -> Void
+    let onBrowse: () -> Void
+    let onURL: (URL) -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            TextField(placeholder, text: $pasted)
+                .textFieldStyle(.plain)
+                .font(.callout)
+                .onSubmit(onSubmit)
+            Button("Browse…", action: onBrowse)
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(hovering ? Color.accentColor.opacity(0.12) : Color.gray.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(
+                    hovering ? Color.accentColor : Color.gray.opacity(0.25),
+                    style: StrokeStyle(lineWidth: 1, dash: [4])
+                )
+        )
+        .onDrop(of: [.fileURL], delegate: FileURLDropDelegate(hovering: $hovering, onURL: onURL))
     }
 }
 
