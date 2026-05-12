@@ -2,7 +2,7 @@
 
 A short guide for first-time setup on a colleague's Mac. Should take about a minute.
 
-> **Why is there a security warning the first time?** File Shuffler is shared internally without paying Apple's £79/year Developer Programme fee, so macOS doesn't recognise the publisher. The app is the same as the one you're being sent, but you'll need to tell macOS once that you trust it. After that it just runs normally. This is how most internal Mac tools at small companies work.
+> **Why is there an extra step?** File Shuffler is shared internally without paying Apple's £79/year Developer Programme fee, so macOS doesn't recognise the publisher. On recent macOS versions (Sequoia and later), Apple no longer offers an "Open Anyway" button for apps like this — the only way to launch it is to clear the quarantine flag that macOS adds to anything downloaded from the internet. One Terminal command does it. This is how most internal Mac tools at small companies work.
 
 ## 1. Download
 
@@ -15,41 +15,37 @@ Go to the **Releases** page on GitHub and download the latest `FileShuffler-vX.Y
 1. Double-click the `.zip` to unzip it. You'll get `FileShuffler.app`.
 2. Drag `FileShuffler.app` into your **Applications** folder.
 
-## 3. First launch (the one-time security dance)
+## 3. Clear the quarantine flag
 
-Try to open File Shuffler. **macOS will block it the first time** with a message like:
-
-> *"File Shuffler can't be opened because Apple cannot check it for malicious software."*
-
-That's expected. Here's how to allow it:
-
-1. Click **Done** to dismiss the warning.
-2. Open **System Settings** (Apple menu → System Settings).
-3. In the sidebar, click **Privacy & Security**.
-4. Scroll down to the **Security** section.
-5. You'll see a message: *"File Shuffler was blocked to protect your Mac."* Click **Open Anyway** next to it.
-6. Confirm with your password / Touch ID.
-7. macOS will now ask once more if you really want to open it — click **Open**.
-
-That's it. From now on, File Shuffler launches normally with a double-click.
-
-## 4. Updates
-
-When a new version is released, download the new ZIP from the Releases page, unzip it, and drag the new `FileShuffler.app` into Applications, replacing the old one. macOS will keep your "trusted" status — no need to repeat the security dance.
-
-## Troubleshooting
-
-**"App is damaged and can't be opened"** — usually means the ZIP got mangled in transit (some email gateways break Mac apps). Re-download from the Releases page directly. If that doesn't help, open Terminal and run:
+Open **Terminal** (⌘+Space, type "Terminal", press Return) and paste this in, then press Return:
 
 ```
 xattr -cr /Applications/FileShuffler.app
 ```
 
-then try opening again.
+You won't see any output — that's fine, it means it worked. You can close Terminal now.
 
-**The security dance doesn't seem to have worked** — sometimes macOS is fussy. Try right-clicking (or Control-clicking) the app icon in Applications, choose **Open**, then click **Open** in the dialog that appears. That's an alternative path to the same outcome.
+## 4. Launch
 
-**An update broke launching** — re-run the security dance from step 3. macOS occasionally re-quarantines apps after big system updates.
+Double-click **FileShuffler** in your Applications folder. It should open normally. From now on it launches with a double-click like any other app.
+
+## 5. Updates
+
+When a new version is released:
+
+1. Download the new ZIP from the Releases page and unzip it.
+2. Drag the new `FileShuffler.app` into Applications, replacing the old one.
+3. Re-run the Terminal command from step 3 — every download from GitHub gets a fresh quarantine flag that needs clearing.
+
+## Troubleshooting
+
+**"FileShuffler can't be opened because Apple cannot check it for malicious software" / only Cancel and Move to Trash buttons** — you skipped or need to re-run step 3. Open Terminal and run `xattr -cr /Applications/FileShuffler.app`, then try again.
+
+**"App is damaged and can't be opened"** — usually means the ZIP got mangled in transit (some email gateways break Mac apps). Re-download from the Releases page directly, then run the Terminal command from step 3.
+
+**An update broke launching** — re-run the Terminal command from step 3. macOS re-applies quarantine to every fresh download.
+
+**On older macOS (Ventura / Sonoma)** — the Terminal command still works and is the simplest path. If you'd rather not use Terminal, you can instead right-click (or Control-click) the app icon in Applications, choose **Open**, then click **Open** in the dialog. That option was removed in Sequoia, so it only works on older systems.
 
 ---
 
