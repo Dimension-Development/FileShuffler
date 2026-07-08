@@ -11,6 +11,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Version stamped into Info.plist. Pass it for release builds
+# (./scripts/bundle-app.sh 0.3.0); bare invocations get a dev marker so a
+# forgotten argument can't ship an old-looking version number again.
+VERSION="${1:-0.0.0-dev}"
+
 swift build -c release
 
 APP="FileShuffler.app"
@@ -53,8 +58,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key>                  <string>File Shuffler</string>
     <key>CFBundleDisplayName</key>           <string>File Shuffler</string>
     <key>CFBundlePackageType</key>           <string>APPL</string>
-    <key>CFBundleShortVersionString</key>    <string>0.1.0</string>
-    <key>CFBundleVersion</key>               <string>1</string>
+    <key>CFBundleShortVersionString</key>    <string>${VERSION}</string>
+    <key>CFBundleVersion</key>               <string>${VERSION}</string>
     <key>LSMinimumSystemVersion</key>        <string>14.0</string>
     <key>NSHighResolutionCapable</key>       <true/>
     ${ICON_PLIST_LINE}
