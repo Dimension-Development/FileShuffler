@@ -1,8 +1,17 @@
 import Foundation
 
-/// One completed move, kept in the in-memory journal so Undo can reverse it
-/// exactly. We capture both URLs because the source filename can differ from
-/// the destination filename only by whitespace/case under the matcher's
+/// How an apply pass transfers files. `.copy` duplicates each file into the
+/// destination and leaves the original untouched — this is what the app
+/// ships with. `.move` physically relocates files; kept implemented and
+/// tested so a per-job toggle can return without re-plumbing the executor.
+enum TransferMode: Equatable, Sendable {
+    case move
+    case copy
+}
+
+/// One completed transfer, kept in the in-memory journal so Undo can reverse
+/// it exactly. We capture both URLs because the source filename can differ
+/// from the destination filename only by whitespace/case under the matcher's
 /// normalisation rules — we don't want Undo to second-guess the original.
 struct Move: Hashable, Sendable {
     let src: URL

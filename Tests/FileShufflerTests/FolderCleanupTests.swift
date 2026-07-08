@@ -101,7 +101,7 @@ struct FolderCleanupTests {
                 row: MappingRow(id: 0, fileName: "art", folderName: "Material"),
                 normalised: false
             )
-            let result = await MoveExecutor.apply(matches: [match], destinationFolder: base, callbacks: .silent)
+            let result = await MoveExecutor.apply(matches: [match], destinationFolder: base, mode: .move, callbacks: .silent)
             #expect(result.moved.count == 1)
 
             let candidates = FolderCleanup.candidates(from: result.moved, sourceFolders: [base])
@@ -111,7 +111,7 @@ struct FolderCleanupTests {
 
             // Undo should restore the file — its parent folder is recreated
             // by the move executor's intermediate-directories flag.
-            let undo = await MoveExecutor.undo(result.moved)
+            let undo = await MoveExecutor.undo(result.moved, mode: .move)
             #expect(undo.errors.isEmpty)
             #expect(FileManager.default.fileExists(atPath: src.path))
             #expect(FileManager.default.fileExists(atPath: folder.path))

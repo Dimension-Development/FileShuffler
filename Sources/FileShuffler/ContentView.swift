@@ -23,12 +23,27 @@ struct ContentView: View {
     @State private var destinationFolder: URL?
 
     @State private var sheetURL: URL?
-    @State private var sheetTable: SpreadsheetTable?
+    /// Every worksheet of the loaded workbook; `worksheetName` selects the
+    /// active one. CSV/TSV files load as a single pseudo-sheet, so the
+    /// worksheet picker only appears for multi-sheet .xlsx job sheets.
+    @State private var workbookTables: [NamedTable] = []
+    @State private var worksheetName: String = ""
     @State private var fileColumn: String = ""
     @State private var folderColumn: String = ""
     /// Sentinel "(none)" disables the quantity rename. Stored as the picker's
     /// selection so SwiftUI can bind to it like a normal column choice.
     @State private var quantityColumn: String = ContentView.noneTag
+    /// Optional second artwork column ("Artwork name Back" on V1 job
+    /// sheets). "(none)" disables it, same pattern as the quantity picker.
+    @State private var backFileColumn: String = ContentView.noneTag
+    /// Optional nested-destination column ("Colour Spec" on V1 job sheets):
+    /// files land in <Folder>/<Subfolder> when set.
+    @State private var subfolderColumn: String = ContentView.noneTag
+
+    /// The active worksheet's table, if any.
+    private var sheetTable: SpreadsheetTable? {
+        workbookTables.first { $0.name == worksheetName }?.table
+    }
     @State private var files: [SourceFile] = []
     @State private var plan: MatchPlan?
     /// Operator's pick per conflicted row (key = `MappingRow.id`). Persists
@@ -38,6 +53,12 @@ struct ContentView: View {
     @State private var error: String?
 
     static let noneTag = "(none)"
+
+    /// The app copies files rather than moving them: originals stay in the
+    /// source folders, and Undo deletes the copies. `MoveExecutor` still
+    /// supports `.move` (kept implemented and tested) should a per-job
+    /// toggle ever be wanted.
+    private static let transferMode: TransferMode = .copy
 
     // M1 — apply / undo flow state
     @State private var applyPhase: ApplyPhase = .idle
@@ -93,14 +114,14 @@ struct ContentView: View {
             refreshClipboardSuggestion()
         }
         .alert(
-            "Move \(plan?.matched.count ?? 0) files?",
+            "Copy \(plan?.matched.count ?? 0) files?",
             isPresented: $confirmingApply,
             presenting: plan
         ) { _ in
-            Button("Move", action: startApply)
+            Button("Copy", action: startApply)
             Button("Cancel", role: .cancel, action: {})
         } message: { _ in
-            Text("Files will move from their source locations into the destination folders shown in the plan, under \(destinationFolder?.lastPathComponent ?? "the destination folder"). Files not listed in the sheet are left in place.")
+            Text("Files will be copied from their source locations into the destination folders shown in the plan, under \(destinationFolder?.lastPathComponent ?? "the destination folder"). The originals stay where they are. Files not listed in the sheet are not copied.")
         }
         .alert(
             "“\(pendingCollision?.destination.lastPathComponent ?? "")” already exists",
@@ -135,7 +156,7 @@ struct ContentView: View {
     private var footer: some View {
         HStack {
             Spacer()
-            Button("Apply moves") {
+            Button("Copy files") {
                 confirmingApply = true
             }
             .buttonStyle(.borderedProminent)
@@ -151,13 +172,13 @@ struct ContentView: View {
         switch applyPhase {
         case .applying:
             ApplyProgressView(
-                title: "Applying moves…",
+                title: "Copying files…",
                 progress: applyProgress,
                 onCancel: nil    // collision dialog already offers Cancel apply
             )
         case .undoing:
             ApplyProgressView(
-                title: "Undoing…",
+                title: "Removing copies…",
                 progress: applyProgress,
                 onCancel: nil
             )
@@ -260,21 +281,61 @@ struct ContentView: View {
                 trailing: { Button("Browse…", action: pickSheet) },
                 onURL: setSheet
             )
-            if let table = sheetTable {
-                HStack(spacing: 16) {
-                    columnPicker(label: "File column", selection: $fileColumn, options: table.headers)
-                    columnPicker(label: "Folder column", selection: $folderColumn, options: table.headers)
-                    columnPicker(
-                        label: "Quantity column",
-                        selection: $quantityColumn,
-                        options: [Self.noneTag] + table.headers,
-                        help: "Optional. When set, files are renamed with a _xN suffix using the quantity from each row."
-                    )
-                    Spacer()
+            if !workbookTables.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    if workbookTables.count > 1 {
+                        HStack(spacing: 8) {
+                            Text("Worksheet").foregroundStyle(.secondary)
+                            Picker("", selection: $worksheetName) {
+                                ForEach(workbookTables, id: \.name) { Text($0.name).tag($0.name) }
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: 240)
+                            .help("Which tab of the workbook holds the job table. Auto-picked by looking for recognisable columns — override if it guessed wrong.")
+                            Spacer()
+                        }
+                        .onChange(of: worksheetName) {
+                            // A different sheet means different headers —
+                            // re-detect rather than carry stale choices over.
+                            applyDetectedColumns()
+                            rebuildPlan()
+                        }
+                    }
+                    if let table = sheetTable {
+                        let options = columnOptions(table)
+                        HStack(spacing: 16) {
+                            columnPicker(label: "File column", selection: $fileColumn, options: options)
+                            columnPicker(
+                                label: "Back file column",
+                                selection: $backFileColumn,
+                                options: [Self.noneTag] + options,
+                                help: "Optional second artwork column (e.g. 'Artwork name Back'). Rows with a value there produce an extra file, copied to the same folder."
+                            )
+                            columnPicker(
+                                label: "Quantity column",
+                                selection: $quantityColumn,
+                                options: [Self.noneTag] + options,
+                                help: "Optional. When set, files are renamed with a _xN suffix using the quantity from each row."
+                            )
+                            Spacer()
+                        }
+                        HStack(spacing: 16) {
+                            columnPicker(label: "Folder column", selection: $folderColumn, options: options)
+                            columnPicker(
+                                label: "Subfolder column",
+                                selection: $subfolderColumn,
+                                options: [Self.noneTag] + options,
+                                help: "Optional. Files are copied into <Folder>/<Subfolder> — e.g. Material/Colour Spec."
+                            )
+                            Spacer()
+                        }
+                        .onChange(of: fileColumn) { rebuildPlan() }
+                        .onChange(of: folderColumn) { rebuildPlan() }
+                        .onChange(of: quantityColumn) { rebuildPlan() }
+                        .onChange(of: backFileColumn) { rebuildPlan() }
+                        .onChange(of: subfolderColumn) { rebuildPlan() }
+                    }
                 }
-                .onChange(of: fileColumn) { rebuildPlan() }
-                .onChange(of: folderColumn) { rebuildPlan() }
-                .onChange(of: quantityColumn) { rebuildPlan() }
             }
         }
     }
@@ -331,7 +392,7 @@ struct ContentView: View {
 
     private func matchedSection(_ plan: MatchPlan) -> some View {
         let grouped = Dictionary(grouping: plan.matched, by: { $0.destination })
-        return planSection(title: "Matched — will move", count: plan.matched.count, tint: .green) {
+        return planSection(title: "Matched — will copy", count: plan.matched.count, tint: .green) {
             if grouped.isEmpty {
                 Text("Nothing matched yet.").foregroundStyle(.secondary)
             } else {
@@ -475,10 +536,13 @@ struct ContentView: View {
         sourceFolders = []
         destinationFolder = nil
         sheetURL = nil
-        sheetTable = nil
+        workbookTables = []
+        worksheetName = ""
         fileColumn = ""
         folderColumn = ""
         quantityColumn = Self.noneTag
+        backFileColumn = Self.noneTag
+        subfolderColumn = Self.noneTag
         files = []
         plan = nil
         conflictResolutions = [:]
@@ -740,19 +804,78 @@ struct ContentView: View {
     private func setSheet(_ url: URL) {
         sheetURL = url
         do {
-            let table = try SpreadsheetReader.read(url)
-            sheetTable = table
-            let detected = table.detectColumns()
-            fileColumn = detected.file ?? table.headers.first ?? ""
-            folderColumn = detected.folder ?? (table.headers.dropFirst().first ?? "")
-            // Auto-pick the quantity column when one is present in the sheet,
-            // otherwise leave it disabled. The operator can override either way.
-            quantityColumn = detected.quantity ?? Self.noneTag
+            let tables = try SpreadsheetReader.readWorkbook(url)
+            workbookTables = tables
+            // Best-scoring worksheet wins (the V1 job sheet's table lives on
+            // "Print & Laser", not the "Cover" tab); operator can override.
+            worksheetName = SpreadsheetReader.bestTable(in: tables)?.name ?? ""
+            applyDetectedColumns()
             error = nil
             rescan()
+            // V1 job sheets carry the artwork folder as a server link in the
+            // banner ("ARTWORK AT:" row) — feed it straight into the sources
+            // so a dropped job sheet sets the whole job up by itself.
+            if let links = sheetTable?.sourceLinks, !links.isEmpty {
+                Task { await autoAddSheetSources(links) }
+            }
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    /// Add the job sheet's own artwork links as sources. Runs through the
+    /// same parse → mount → validate pipeline as a manual paste, but with
+    /// gentler failure handling: a link that's already a source is skipped
+    /// silently, and a broken link becomes an inline note rather than
+    /// blocking the sheet load.
+    @MainActor
+    private func autoAddSheetSources(_ links: [String]) async {
+        for raw in links {
+            switch PathNormaliser.parseSource(raw) {
+            case .unrecognised:
+                error = "The job sheet's artwork link couldn't be understood — add the source folder manually."
+            case .wrongShare(let name):
+                error = "The job sheet's artwork link points at “\(name)”, which isn't a share I work with — add the source folder manually."
+            case .local(let url), .onShare(let url):
+                if case .onShare = PathNormaliser.parseSource(raw),
+                   !FileManager.default.fileExists(atPath: "/Volumes/" + PathNormaliser.canonicalShare) {
+                    do {
+                        try await NetFSMounter.ensureCanonicalShareMounted()
+                    } catch {
+                        self.error = "Found the artwork link in the job sheet, but couldn't connect to the DimensionHub server. Open it once in Finder, then add the source manually."
+                        continue
+                    }
+                }
+                let std = url.standardizedFileURL.resolvingSymlinksInPath()
+                if sourceFolders.contains(where: { $0.standardizedFileURL.resolvingSymlinksInPath() == std }) {
+                    continue    // already a source — nothing to report
+                }
+                await applyAddSource(url)
+            }
+        }
+    }
+
+    /// Run column autodetection against the active worksheet and apply the
+    /// results — on sheet load and whenever the operator switches worksheet.
+    /// Undetected optional roles fall back to "(none)"; the operator can
+    /// override any pick.
+    private func applyDetectedColumns() {
+        guard let table = sheetTable else { return }
+        let options = columnOptions(table)
+        let detected = table.detectColumns()
+        fileColumn = detected.file ?? options.first ?? ""
+        folderColumn = detected.folder ?? (options.dropFirst().first ?? "")
+        quantityColumn = detected.quantity ?? Self.noneTag
+        backFileColumn = detected.backFile ?? Self.noneTag
+        subfolderColumn = detected.subfolder ?? Self.noneTag
+    }
+
+    /// Headers usable as picker options: blanks dropped (job-sheet tables
+    /// don't start in column A, so the header row leads with empty pads)
+    /// and duplicates removed so SwiftUI's ForEach ids stay unique.
+    private func columnOptions(_ table: SpreadsheetTable) -> [String] {
+        var seen = Set<String>()
+        return table.headers.filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
     private func rescan() {
@@ -776,11 +899,15 @@ struct ContentView: View {
             return
         }
         do {
-            let qty = (quantityColumn == Self.noneTag) ? nil : quantityColumn
+            func chosen(_ column: String) -> String? {
+                column == Self.noneTag ? nil : column
+            }
             let rows = try table.mappingRows(
                 fileColumn: fileColumn,
                 folderColumn: folderColumn,
-                quantityColumn: qty
+                quantityColumn: chosen(quantityColumn),
+                backFileColumn: chosen(backFileColumn),
+                subfolderColumn: chosen(subfolderColumn)
             )
             plan = MatchEngine.plan(
                 files: files, rows: rows,
@@ -830,6 +957,7 @@ struct ContentView: View {
             let result = await MoveExecutor.apply(
                 matches: matches,
                 destinationFolder: destinationFolder,
+                mode: Self.transferMode,
                 callbacks: callbacks
             )
             await MainActor.run {
@@ -840,15 +968,16 @@ struct ContentView: View {
                         startedAt: started,
                         sourceFolders: sources,
                         destinationFolder: destinationFolder,
-                        sheetURL: sheetURL
+                        sheetURL: sheetURL,
+                        mode: Self.transferMode
                     )
                 }
-                // Compute empty-folder candidates from the journal once the
-                // apply settles, so the result sheet can offer Clean up.
-                cleanupCandidates = FolderCleanup.candidates(
-                    from: result.moved,
-                    sourceFolders: sources
-                )
+                // Empty-folder cleanup only makes sense for moves — a copy
+                // leaves every source file in place, so scanning for newly
+                // emptied folders would be wasted IO that finds nothing.
+                cleanupCandidates = Self.transferMode == .move
+                    ? FolderCleanup.candidates(from: result.moved, sourceFolders: sources)
+                    : nil
                 applyPhase = .completed
             }
         }
@@ -881,7 +1010,7 @@ struct ContentView: View {
         applyProgress = MoveProgress(total: moves.count, done: 0, current: "")
 
         Task {
-            let undo = await MoveExecutor.undo(moves)
+            let undo = await MoveExecutor.undo(moves, mode: Self.transferMode)
             await MainActor.run {
                 undoResult = undo
                 applyPhase = .undone
@@ -890,8 +1019,9 @@ struct ContentView: View {
     }
 
     /// Close the apply/undo sheet and refresh the plan against the new state
-    /// of the disk — after a successful apply, the source folders are empty;
-    /// after an undo they're back. Either way the plan should be re-derived.
+    /// of the disk. Copying leaves the sources untouched, but a rescan keeps
+    /// the plan honest when the destination overlaps a source folder (the
+    /// default when the destination wasn't re-pointed).
     /// `auditLog` is preserved so the operator can still export it from a
     /// saved project file later, but `applyResult` is cleared since the
     /// in-memory undo journal is no longer valid.
@@ -932,6 +1062,9 @@ struct ContentView: View {
             fileColumn: fileColumn,
             folderColumn: folderColumn,
             quantityColumn: quantityColumn == Self.noneTag ? nil : quantityColumn,
+            worksheetName: worksheetName.isEmpty ? nil : worksheetName,
+            backFileColumn: backFileColumn == Self.noneTag ? nil : backFileColumn,
+            subfolderColumn: subfolderColumn == Self.noneTag ? nil : subfolderColumn,
             conflictResolutions: serialiseResolutions(conflictResolutions),
             auditLog: auditLog
         )
@@ -963,11 +1096,20 @@ struct ContentView: View {
             // pickers populate before we apply the saved column choices.
             let restoredSheet = URL(fileURLWithPath: project.sheetPath)
             sheetURL = restoredSheet
-            let table = try SpreadsheetReader.read(restoredSheet)
-            sheetTable = table
+            let tables = try SpreadsheetReader.readWorkbook(restoredSheet)
+            workbookTables = tables
+            // Saved worksheet wins when it still exists; otherwise fall back
+            // to the reader's pick (sheet renamed or file replaced).
+            if let saved = project.worksheetName, tables.contains(where: { $0.name == saved }) {
+                worksheetName = saved
+            } else {
+                worksheetName = SpreadsheetReader.bestTable(in: tables)?.name ?? ""
+            }
             fileColumn = project.fileColumn
             folderColumn = project.folderColumn
             quantityColumn = project.quantityColumn ?? Self.noneTag
+            backFileColumn = project.backFileColumn ?? Self.noneTag
+            subfolderColumn = project.subfolderColumn ?? Self.noneTag
             sourceFolders = project.sourceFolderPaths.map { URL(fileURLWithPath: $0) }
             destinationFolder = URL(fileURLWithPath: project.destinationPath)
             conflictResolutions = deserialiseResolutions(project.conflictResolutions)

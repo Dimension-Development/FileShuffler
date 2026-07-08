@@ -23,10 +23,17 @@ struct SourceFile: Identifiable, Hashable {
     }
 }
 
-/// One row in the mapping spreadsheet.
+/// One file-to-folder mapping derived from the spreadsheet. Usually one
+/// per sheet row; a row with both a front and a back artwork column emits
+/// two.
 struct MappingRow: Identifiable, Hashable {
-    let id: Int               // sheet row number, kept for stable identity in UI
+    /// Stable identity for the UI and for persisted conflict resolutions.
+    /// Derived from the sheet row index: front file = 2n, back file = 2n+1.
+    let id: Int
     let fileName: String
+    /// Destination path relative to the destination folder. A single
+    /// sanitised folder name, or `<folder>/<subfolder>` when the job uses
+    /// a subfolder column (e.g. Material/Colour Spec).
     let folderName: String
     /// Optional print quantity. When non-nil and non-empty after trimming,
     /// the destination filename gets a `_x<quantity>` suffix before its

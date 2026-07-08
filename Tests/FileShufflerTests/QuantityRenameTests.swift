@@ -131,7 +131,7 @@ struct QuantityRenameTests {
             row: MappingRow(id: 0, fileName: "foo", folderName: "Material", quantity: "30"),
             normalised: false
         )
-        let result = await MoveExecutor.apply(matches: [match], destinationFolder: base, callbacks: .silent)
+        let result = await MoveExecutor.apply(matches: [match], destinationFolder: base, mode: .move, callbacks: .silent)
         #expect(result.moved.count == 1)
 
         let renamed = base.appendingPathComponent("Material/foo_x30.ai")

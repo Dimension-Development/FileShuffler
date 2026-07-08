@@ -16,22 +16,26 @@ struct MoveExecutorCallbacks: Sendable {
     )
 }
 
-/// Pure-ish, namespaced functions that perform and reverse moves.
+/// Pure-ish, namespaced functions that perform and reverse transfers
+/// (moves or copies, per `TransferMode`).
 ///
 /// File coordination via `NSFileCoordinator` is used so the operating system
 /// arbitrates with other apps that might have the file open (Finder previews,
-/// Adobe Illustrator, Quick Look). Without it, a move from under a presenter
-/// can leave stale state in the other app.
+/// Adobe Illustrator, Quick Look). Without it, a transfer from under a
+/// presenter can leave stale state in the other app.
 enum MoveExecutor {
 
     /// Apply a list of matches against `destinationFolder`. Each match
-    /// becomes a move from its source URL (which may live under any of
+    /// becomes a transfer from its source URL (which may live under any of
     /// the operator's source folders) into
     /// `destinationFolder/<row.folderName>/<filename>`. Destination
-    /// subfolders are created on demand.
+    /// subfolders are created on demand. `mode` decides whether the source
+    /// file is moved or copied; either way the journal records src → dst
+    /// so Undo knows exactly what to reverse.
     static func apply(
         matches: [Match],
         destinationFolder: URL,
+        mode: TransferMode,
         callbacks: MoveExecutorCallbacks
     ) async -> MoveResult {
         var moved: [Move] = []
@@ -102,7 +106,10 @@ enum MoveExecutor {
             }
 
             do {
-                try coordinatedMove(from: match.source.url, to: destURL)
+                switch mode {
+                case .move: try coordinatedMove(from: match.source.url, to: destURL)
+                case .copy: try coordinatedCopy(from: match.source.url, to: destURL)
+                }
                 moved.append(Move(src: match.source.url, dst: destURL))
             } catch {
                 errors.append(MoveError(match: match, message: error.localizedDescription))
@@ -117,18 +124,26 @@ enum MoveExecutor {
         )
     }
 
-    /// Reverse a journal of moves. We walk in reverse so that, if anything
-    /// went wrong mid-apply, undoing the latest move first reduces the
-    /// chance of one undo step's destination clashing with a later one.
-    static func undo(_ moves: [Move]) async -> UndoResult {
+    /// Reverse a journal of transfers. For `.move`, each file is moved back
+    /// to its recorded source; for `.copy`, the source never changed so
+    /// undoing simply deletes the duplicate we created at the destination.
+    /// We walk in reverse so that, if anything went wrong mid-apply, undoing
+    /// the latest transfer first reduces the chance of one undo step's
+    /// destination clashing with a later one.
+    static func undo(_ moves: [Move], mode: TransferMode) async -> UndoResult {
         var reverted: [Move] = []
         var errors: [String] = []
 
         for move in moves.reversed() {
             do {
-                let parent = move.src.deletingLastPathComponent()
-                try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-                try coordinatedMove(from: move.dst, to: move.src)
+                switch mode {
+                case .move:
+                    let parent = move.src.deletingLastPathComponent()
+                    try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+                    try coordinatedMove(from: move.dst, to: move.src)
+                case .copy:
+                    try coordinatedDelete(at: move.dst)
+                }
                 reverted.append(move)
             } catch {
                 errors.append("\(move.dst.lastPathComponent): \(error.localizedDescription)")
@@ -162,5 +177,49 @@ enum MoveExecutor {
 
         if let coordError { throw coordError }
         if let moveError { throw moveError }
+    }
+
+    /// Synchronous coordinated copy. Reads the source (so a presenter can
+    /// flush pending state first) while writing the destination.
+    private static func coordinatedCopy(from src: URL, to dst: URL) throws {
+        let coordinator = NSFileCoordinator()
+        var coordError: NSError?
+        var copyError: Error?
+
+        coordinator.coordinate(
+            readingItemAt: src, options: [],
+            writingItemAt: dst, options: [.forReplacing],
+            error: &coordError
+        ) { newSrc, newDst in
+            do {
+                try FileManager.default.copyItem(at: newSrc, to: newDst)
+            } catch {
+                copyError = error
+            }
+        }
+
+        if let coordError { throw coordError }
+        if let copyError { throw copyError }
+    }
+
+    /// Synchronous coordinated delete, used to undo a copy.
+    private static func coordinatedDelete(at url: URL) throws {
+        let coordinator = NSFileCoordinator()
+        var coordError: NSError?
+        var deleteError: Error?
+
+        coordinator.coordinate(
+            writingItemAt: url, options: [.forDeleting],
+            error: &coordError
+        ) { target in
+            do {
+                try FileManager.default.removeItem(at: target)
+            } catch {
+                deleteError = error
+            }
+        }
+
+        if let coordError { throw coordError }
+        if let deleteError { throw deleteError }
     }
 }

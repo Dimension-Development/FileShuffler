@@ -5,3 +5,4 @@ DerivedData/
 FileShuffler.app/
 *.zip
 .DS_Store
+/*.xlsx

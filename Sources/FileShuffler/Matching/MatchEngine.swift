@@ -17,6 +17,25 @@ enum MatchEngine {
         return parts.joined(separator: " ")
     }
 
+    /// File extensions we recognise as artwork when a sheet cell includes
+    /// one (V1 job sheets write "foo.pdf" where older sheets wrote "foo").
+    /// A whitelist rather than "anything after the last dot", because
+    /// stems legitimately contain dots ("artwork v1.2") that must survive.
+    private static let artworkExtensions: Set<String> = [
+        "pdf", "ai", "eps", "svg", "tif", "tiff", "png", "jpg", "jpeg", "psd",
+    ]
+
+    /// Matching key for a sheet cell naming a file: normalised, with one
+    /// trailing artwork extension stripped if present, so "Foo.pdf" in the
+    /// sheet matches the on-disk file `Foo.pdf` (whose stem is "foo").
+    /// Files on disk are keyed by their extensionless stem already.
+    static func sheetKey(_ fileName: String) -> String {
+        let n = normalise(fileName)
+        guard let dot = n.lastIndex(of: "."), dot != n.startIndex else { return n }
+        let ext = String(n[n.index(after: dot)...])
+        return artworkExtensions.contains(ext) ? String(n[..<dot]) : n
+    }
+
     /// One operator decision per conflicted row. Indexed by `MappingRow.id`
     /// so the UI can rebuild this dictionary as the operator clicks
     /// candidates without losing earlier picks.
@@ -34,9 +53,11 @@ enum MatchEngine {
     ///
     /// Matching runs in two passes:
     ///
-    ///   1. **Exact**, on the normalised stem. Catches the common case and
-    ///      preserves any legitimate `_xN` filenames in either the sheet
-    ///      or on disk.
+    ///   1. **Exact**, on the normalised stem (with a trailing artwork
+    ///      extension stripped from the sheet side — V1 job sheets write
+    ///      "foo.pdf" where older sheets wrote "foo"). Catches the common
+    ///      case and preserves any legitimate `_xN` filenames in either
+    ///      the sheet or on disk.
     ///   2. **Stripped**, only for rows that didn't match in Pass 1. Strips
     ///      a trailing `_xN` suffix from the file's stem before comparing,
     ///      catching files that were renamed by a previous run of the app
@@ -67,7 +88,7 @@ enum MatchEngine {
 
         var unmatchedRows: [MappingRow] = []
         for row in rows {
-            let key = normalise(row.fileName)
+            let key = sheetKey(row.fileName)
             let candidates = (exactBuckets[key] ?? []).filter { !consumed.contains($0) }
             if candidates.isEmpty {
                 unmatchedRows.append(row)
@@ -118,7 +139,7 @@ enum MatchEngine {
                 strippedBuckets[stripped, default: []].append(i)
             }
             for row in unmatchedRows {
-                let key = normalise(row.fileName)
+                let key = sheetKey(row.fileName)
                 let candidates = (strippedBuckets[key] ?? []).filter { !consumed.contains($0) }
                 if candidates.isEmpty {
                     sheetOrphans.append(row)

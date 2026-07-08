@@ -160,6 +160,34 @@ struct AuditLogReportTests {
         #expect(text.contains("/base/src/b.ai"))
     }
 
+    @Test("Copy-mode report says Copied / Copies; legacy logs stay Moved / Moves")
+    func reportUsesCopyWording() {
+        var log = AuditLog(
+            startedAt: Date(timeIntervalSince1970: 1_715_000_000),
+            finishedAt: Date(timeIntervalSince1970: 1_715_000_005),
+            operatorName: "Luke",
+            sourceFolderPaths: ["/base"],
+            destinationPath: "/base",
+            sheetPath: "",
+            moves: [LoggedMove(src: "/base/src/a.ai", dst: "/base/M/a.ai")],
+            skipped: [],
+            errors: [],
+            stoppedEarly: false,
+            transferMode: "copy"
+        )
+        let copyText = log.plainTextReport()
+        #expect(copyText.contains("Copied:  1"))
+        #expect(copyText.contains("Copies:"))
+        #expect(!copyText.contains("Moved:"))
+
+        // A log without a recorded mode predates the copy behaviour — it
+        // was a move, and the report must keep saying so.
+        log.transferMode = nil
+        let legacyText = log.plainTextReport()
+        #expect(legacyText.contains("Moved:   1"))
+        #expect(legacyText.contains("Moves:"))
+    }
+
     @Test("Report flags cancelled apply")
     func reportFlagsCancellation() {
         let log = AuditLog(

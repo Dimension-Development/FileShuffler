@@ -18,7 +18,7 @@ struct MoveExecutorTests {
                 normalised: false
             )
             let result = await MoveExecutor.apply(
-                matches: [match], destinationFolder: base, callbacks: .silent
+                matches: [match], destinationFolder: base, mode: .move, callbacks: .silent
             )
             #expect(result.moved.count == 1)
             #expect(result.errors.isEmpty)
@@ -43,7 +43,7 @@ struct MoveExecutorTests {
                 onCollision: { _, _ in .skip(forAll: false) }
             )
             let result = await MoveExecutor.apply(
-                matches: [match], destinationFolder: base, callbacks: callbacks
+                matches: [match], destinationFolder: base, mode: .move, callbacks: callbacks
             )
             #expect(result.moved.isEmpty)
             #expect(result.skipped.count == 1)
@@ -70,7 +70,7 @@ struct MoveExecutorTests {
                 onCollision: { _, _ in .replace(forAll: false) }
             )
             let result = await MoveExecutor.apply(
-                matches: [match], destinationFolder: base, callbacks: callbacks
+                matches: [match], destinationFolder: base, mode: .move, callbacks: callbacks
             )
             #expect(result.moved.count == 1)
             let final = try String(contentsOf: dst, encoding: .utf8)
@@ -104,7 +104,7 @@ struct MoveExecutorTests {
                 }
             )
             let result = await MoveExecutor.apply(
-                matches: matches, destinationFolder: base, callbacks: callbacks
+                matches: matches, destinationFolder: base, mode: .move, callbacks: callbacks
             )
             #expect(result.moved.count == 2)
             await #expect(counter.n == 1, "executor should only prompt once when policy goes sticky")
@@ -129,7 +129,7 @@ struct MoveExecutorTests {
                 onCollision: { _, _ in .cancel }
             )
             let result = await MoveExecutor.apply(
-                matches: matches, destinationFolder: base, callbacks: callbacks
+                matches: matches, destinationFolder: base, mode: .move, callbacks: callbacks
             )
             #expect(result.stoppedEarly)
             #expect(result.moved.isEmpty)
@@ -148,11 +148,11 @@ struct MoveExecutorTests {
                 normalised: false
             )
             let result = await MoveExecutor.apply(
-                matches: [match], destinationFolder: base, callbacks: .silent
+                matches: [match], destinationFolder: base, mode: .move, callbacks: .silent
             )
             #expect(result.moved.count == 1)
 
-            let undo = await MoveExecutor.undo(result.moved)
+            let undo = await MoveExecutor.undo(result.moved, mode: .move)
             #expect(undo.errors.isEmpty)
             #expect(undo.reverted.count == 1)
             #expect(FileManager.default.fileExists(atPath: src.path))
@@ -178,9 +178,81 @@ struct MoveExecutorTests {
                 onProgress: { p in await capture.add(p) },
                 onCollision: { _, _ in .skip(forAll: false) }
             )
-            _ = await MoveExecutor.apply(matches: matches, destinationFolder: base, callbacks: callbacks)
+            _ = await MoveExecutor.apply(matches: matches, destinationFolder: base, mode: .move, callbacks: callbacks)
             await #expect(capture.ticks.last?.done == 2)
             await #expect(capture.ticks.last?.total == 2)
+        }
+    }
+
+    // MARK: - Copy mode
+
+    @Test("Copy mode duplicates the file and leaves the original in place")
+    func copyLeavesOriginal() async throws {
+        try await withTempBase { base in
+            let src = try makeFile(at: base.appendingPathComponent("source/a.ai"), contents: "hello")
+            let match = Match(
+                source: SourceFile(url: src, nameStem: "a", relativePath: "source/a.ai", baseFolder: base),
+                row: MappingRow(id: 0, fileName: "a", folderName: "Material One"),
+                normalised: false
+            )
+            let result = await MoveExecutor.apply(
+                matches: [match], destinationFolder: base, mode: .copy, callbacks: .silent
+            )
+            #expect(result.moved.count == 1)
+            #expect(result.errors.isEmpty)
+            let dst = base.appendingPathComponent("Material One/a.ai")
+            #expect(FileManager.default.fileExists(atPath: dst.path))
+            #expect(try String(contentsOf: dst, encoding: .utf8) == "hello")
+            // The original must still be exactly where it was.
+            #expect(FileManager.default.fileExists(atPath: src.path))
+            #expect(try String(contentsOf: src, encoding: .utf8) == "hello")
+        }
+    }
+
+    @Test("Undo of a copy deletes the copies and never touches the originals")
+    func undoCopyDeletesCopies() async throws {
+        try await withTempBase { base in
+            let src = try makeFile(at: base.appendingPathComponent("source/a.ai"), contents: "hello")
+            let match = Match(
+                source: SourceFile(url: src, nameStem: "a", relativePath: "source/a.ai", baseFolder: base),
+                row: MappingRow(id: 0, fileName: "a", folderName: "Material One"),
+                normalised: false
+            )
+            let result = await MoveExecutor.apply(
+                matches: [match], destinationFolder: base, mode: .copy, callbacks: .silent
+            )
+            #expect(result.moved.count == 1)
+
+            let undo = await MoveExecutor.undo(result.moved, mode: .copy)
+            #expect(undo.errors.isEmpty)
+            #expect(undo.reverted.count == 1)
+            let dst = base.appendingPathComponent("Material One/a.ai")
+            #expect(!FileManager.default.fileExists(atPath: dst.path))
+            #expect(FileManager.default.fileExists(atPath: src.path))
+            #expect(try String(contentsOf: src, encoding: .utf8) == "hello")
+        }
+    }
+
+    @Test("Copy-mode collision Replace overwrites the destination, original intact")
+    func copyCollisionReplaceOverwrites() async throws {
+        try await withTempBase { base in
+            let src = try makeFile(at: base.appendingPathComponent("source/a.ai"), contents: "new")
+            let dst = try makeFile(at: base.appendingPathComponent("Material One/a.ai"), contents: "existing")
+            let match = Match(
+                source: SourceFile(url: src, nameStem: "a", relativePath: "source/a.ai", baseFolder: base),
+                row: MappingRow(id: 0, fileName: "a", folderName: "Material One"),
+                normalised: false
+            )
+            let callbacks = MoveExecutorCallbacks(
+                onProgress: { _ in },
+                onCollision: { _, _ in .replace(forAll: false) }
+            )
+            let result = await MoveExecutor.apply(
+                matches: [match], destinationFolder: base, mode: .copy, callbacks: callbacks
+            )
+            #expect(result.moved.count == 1)
+            #expect(try String(contentsOf: dst, encoding: .utf8) == "new")
+            #expect(FileManager.default.fileExists(atPath: src.path))
         }
     }
 

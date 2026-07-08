@@ -14,17 +14,26 @@ struct ShuffleProject: Equatable {
     /// Bumps when the on-disk schema changes. Old files older than this
     /// version get a friendly "this project was saved by a newer version"
     /// error rather than partial decoding. v2 introduced multi-source +
-    /// separate destination; the decoder still reads v1 files transparently.
-    static let currentVersion = 2
+    /// separate destination; v3 added worksheet selection plus the back-file
+    /// and subfolder columns. The decoder still reads older files
+    /// transparently.
+    static let currentVersion = 3
 
     var version: Int
     var sourceFolderPaths: [String]
     var destinationPath: String
     var sheetPath: String
+    /// Which worksheet of the workbook holds the job table. `nil` (v1/v2
+    /// files, or CSV inputs) means "let the reader pick".
+    var worksheetName: String?
     var fileColumn: String
     var folderColumn: String
     /// `nil` means the operator did not pick a quantity column for this job.
     var quantityColumn: String?
+    /// Optional second artwork column (e.g. "Artwork name Back").
+    var backFileColumn: String?
+    /// Optional nested-destination column (e.g. "Colour Spec").
+    var subfolderColumn: String?
     /// Operator picks captured per conflicted sheet row, keyed by the
     /// `MappingRow.id` (sheet row number). Stored as JSON-friendly strings.
     var conflictResolutions: [String: ResolutionRecord]
@@ -40,6 +49,9 @@ struct ShuffleProject: Equatable {
         fileColumn: String,
         folderColumn: String,
         quantityColumn: String?,
+        worksheetName: String? = nil,
+        backFileColumn: String? = nil,
+        subfolderColumn: String? = nil,
         conflictResolutions: [String: ResolutionRecord] = [:],
         auditLog: AuditLog? = nil,
         savedAt: Date = Date()
@@ -48,9 +60,12 @@ struct ShuffleProject: Equatable {
         self.sourceFolderPaths = sourceFolderPaths
         self.destinationPath = destinationPath
         self.sheetPath = sheetPath
+        self.worksheetName = worksheetName
         self.fileColumn = fileColumn
         self.folderColumn = folderColumn
         self.quantityColumn = quantityColumn
+        self.backFileColumn = backFileColumn
+        self.subfolderColumn = subfolderColumn
         self.conflictResolutions = conflictResolutions
         self.savedAt = savedAt
         self.auditLog = auditLog
@@ -73,9 +88,12 @@ extension ShuffleProject: Codable {
         case sourceFolderPaths
         case destinationPath
         case sheetPath
+        case worksheetName
         case fileColumn
         case folderColumn
         case quantityColumn
+        case backFileColumn
+        case subfolderColumn
         case conflictResolutions
         case savedAt
         case auditLog
@@ -88,6 +106,10 @@ extension ShuffleProject: Codable {
         let version = try c.decode(Int.self, forKey: .version)
         self.version = version
         self.sheetPath = try c.decode(String.self, forKey: .sheetPath)
+        // v3 additions — absent (nil) in older files.
+        self.worksheetName = try c.decodeIfPresent(String.self, forKey: .worksheetName)
+        self.backFileColumn = try c.decodeIfPresent(String.self, forKey: .backFileColumn)
+        self.subfolderColumn = try c.decodeIfPresent(String.self, forKey: .subfolderColumn)
         self.fileColumn = try c.decode(String.self, forKey: .fileColumn)
         self.folderColumn = try c.decode(String.self, forKey: .folderColumn)
         self.quantityColumn = try c.decodeIfPresent(String.self, forKey: .quantityColumn)
@@ -118,9 +140,12 @@ extension ShuffleProject: Codable {
         try c.encode(sourceFolderPaths, forKey: .sourceFolderPaths)
         try c.encode(destinationPath, forKey: .destinationPath)
         try c.encode(sheetPath, forKey: .sheetPath)
+        try c.encodeIfPresent(worksheetName, forKey: .worksheetName)
         try c.encode(fileColumn, forKey: .fileColumn)
         try c.encode(folderColumn, forKey: .folderColumn)
         try c.encodeIfPresent(quantityColumn, forKey: .quantityColumn)
+        try c.encodeIfPresent(backFileColumn, forKey: .backFileColumn)
+        try c.encodeIfPresent(subfolderColumn, forKey: .subfolderColumn)
         try c.encode(conflictResolutions, forKey: .conflictResolutions)
         try c.encode(savedAt, forKey: .savedAt)
         try c.encodeIfPresent(auditLog, forKey: .auditLog)
@@ -146,6 +171,10 @@ struct AuditLog: Codable, Equatable {
     /// pass, if the operator opted in. Optional in JSON for backwards-
     /// compatibility with `.shuffle` files saved before cleanup existed.
     var cleanedUpFolders: [String]?
+    /// `"move"` or `"copy"` — how files were transferred. Optional in JSON
+    /// for backwards-compatibility: logs written before the copy behaviour
+    /// existed were all moves, so `nil` reads as a move.
+    var transferMode: String?
 
     var totals: (moved: Int, skipped: Int, errors: Int) {
         (moves.count, skipped.count, errors.count)
@@ -158,6 +187,7 @@ struct AuditLog: Codable, Equatable {
         case startedAt, finishedAt, operatorName
         case sourceFolderPaths, destinationPath
         case sheetPath, moves, skipped, errors, stoppedEarly, cleanedUpFolders
+        case transferMode
         case baseFolderPath  // v1 only
     }
 
@@ -172,7 +202,8 @@ struct AuditLog: Codable, Equatable {
         skipped: [String],
         errors: [LoggedError],
         stoppedEarly: Bool,
-        cleanedUpFolders: [String]? = nil
+        cleanedUpFolders: [String]? = nil,
+        transferMode: String? = nil
     ) {
         self.startedAt = startedAt
         self.finishedAt = finishedAt
@@ -185,6 +216,7 @@ struct AuditLog: Codable, Equatable {
         self.errors = errors
         self.stoppedEarly = stoppedEarly
         self.cleanedUpFolders = cleanedUpFolders
+        self.transferMode = transferMode
     }
 
     init(from decoder: Decoder) throws {
@@ -198,6 +230,7 @@ struct AuditLog: Codable, Equatable {
         self.errors = try c.decode([LoggedError].self, forKey: .errors)
         self.stoppedEarly = try c.decode(Bool.self, forKey: .stoppedEarly)
         self.cleanedUpFolders = try c.decodeIfPresent([String].self, forKey: .cleanedUpFolders)
+        self.transferMode = try c.decodeIfPresent(String.self, forKey: .transferMode)
 
         if let sources = try c.decodeIfPresent([String].self, forKey: .sourceFolderPaths) {
             self.sourceFolderPaths = sources
@@ -223,6 +256,7 @@ struct AuditLog: Codable, Equatable {
         try c.encode(errors, forKey: .errors)
         try c.encode(stoppedEarly, forKey: .stoppedEarly)
         try c.encodeIfPresent(cleanedUpFolders, forKey: .cleanedUpFolders)
+        try c.encodeIfPresent(transferMode, forKey: .transferMode)
     }
 }
 
@@ -312,7 +346,8 @@ extension AuditLog {
         sourceFolders: [URL],
         destinationFolder: URL,
         sheetURL: URL?,
-        operatorName: String = NSFullUserName()
+        operatorName: String = NSFullUserName(),
+        mode: TransferMode
     ) {
         self.init(
             startedAt: startedAt,
@@ -327,7 +362,8 @@ extension AuditLog {
                 LoggedError(src: $0.match.source.url.path, message: $0.message)
             },
             stoppedEarly: result.stoppedEarly,
-            cleanedUpFolders: nil
+            cleanedUpFolders: nil,
+            transferMode: mode == .copy ? "copy" : "move"
         )
     }
 
@@ -338,6 +374,9 @@ extension AuditLog {
     func plainTextReport() -> String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
+        // Logs from before the copy behaviour existed have no transferMode
+        // recorded — those were all moves.
+        let copied = transferMode == "copy"
         var out = ""
         out += "File Shuffler — Audit Log\n"
         out += "==========================\n\n"
@@ -355,13 +394,13 @@ extension AuditLog {
             out += "Spreadsheet: \(sheetPath)\n"
         }
         out += "\nSummary:\n"
-        out += "  Moved:   \(moves.count)\n"
+        out += copied ? "  Copied:  \(moves.count)\n" : "  Moved:   \(moves.count)\n"
         out += "  Skipped: \(skipped.count)\n"
         out += "  Errors:  \(errors.count)\n"
         if stoppedEarly {
             out += "  (Apply was cancelled mid-run.)\n"
         }
-        out += "\nMoves:\n"
+        out += copied ? "\nCopies:\n" : "\nMoves:\n"
         if moves.isEmpty {
             out += "  (none)\n"
         } else {

@@ -98,7 +98,10 @@ struct ApplyResultView: View {
                 }
                 Spacer()
                 if canUndo {
-                    Button("Undo", role: .destructive, action: onUndo)
+                    // "Remove copies" rather than "Undo" — it says exactly
+                    // what will happen, and reassures that the originals
+                    // aren't part of the deal.
+                    Button("Remove copies", role: .destructive, action: onUndo)
                 }
                 Button("Done", action: onDone)
                     .keyboardShortcut(.defaultAction)
@@ -114,11 +117,11 @@ struct ApplyResultView: View {
                 .font(.title)
                 .foregroundStyle(undoResult != nil ? .blue : (result.hasIssues ? .orange : .green))
             VStack(alignment: .leading) {
-                Text(undoResult != nil ? "Undo finished" : (result.stoppedEarly ? "Apply cancelled" : "Apply finished"))
+                Text(undoResult != nil ? "Copies removed" : (result.stoppedEarly ? "Copy cancelled" : "Copy finished"))
                     .font(.title3).bold()
                 Text(undoResult != nil
-                     ? "Files restored to their original locations."
-                     : "Files moved to their destination folders.")
+                     ? "The copies were deleted. The original files were never touched."
+                     : "Files copied to their destination folders. The originals stay in place.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -128,7 +131,7 @@ struct ApplyResultView: View {
 
     private var stats: some View {
         HStack(spacing: 20) {
-            statTile(label: "Moved", value: "\(result.moved.count)", tint: .green)
+            statTile(label: "Copied", value: "\(result.moved.count)", tint: .green)
             statTile(label: "Skipped", value: "\(result.skipped.count)", tint: result.skipped.isEmpty ? .secondary : .orange)
             statTile(label: "Errors", value: "\(result.errors.count)", tint: result.errors.isEmpty ? .secondary : .red)
         }
@@ -146,7 +149,7 @@ struct ApplyResultView: View {
 
     private func undoSummary(_ undo: UndoResult) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Undo: \(undo.reverted.count) restored\(undo.errors.isEmpty ? "" : ", \(undo.errors.count) failed")")
+            Text("Undo: \(undo.reverted.count) \(undo.reverted.count == 1 ? "copy" : "copies") removed\(undo.errors.isEmpty ? "" : ", \(undo.errors.count) failed")")
                 .font(.callout)
             if !undo.errors.isEmpty {
                 ForEach(undo.errors, id: \.self) { e in
