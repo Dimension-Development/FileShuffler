@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import CoreGraphics
+import ZIPFoundation
 @testable import FileShuffler
 
 /// Tests for the page-size extractor and CSV report builder.
@@ -182,6 +183,90 @@ struct SizesReportTests {
         // character predicate sees no separators at all in CRLF text.
         let nonEmpty = csv.components(separatedBy: "\r\n").filter { !$0.isEmpty }
         #expect(nonEmpty.count == 4) // header + 3 data rows
+    }
+
+    @Test("Sheet rows with no file on disk appear with the missing-file note")
+    func missingRowsAppearInCSV() {
+        let base = URL(fileURLWithPath: "/x")
+        let row = MappingRow(id: 4, fileName: "ghost.pdf", folderName: "200gsm Metro Vibe/White")
+        let csv = SizesReport(baseFolder: base, files: [], missing: [row]).csv()
+        #expect(csv.contains("ghost.pdf,200gsm Metro Vibe/White,,,,,,\(SizesReport.missingFileNote)"))
+    }
+}
+
+@Suite("SizesReport XLSX")
+struct SizesReportXLSXTests {
+
+    /// Unzip one part of the workbook the report produced.
+    private func part(_ data: Data, _ path: String) throws -> String {
+        let archive = try Archive(data: data, accessMode: .read)
+        let entry = try #require(archive[path], "missing archive part \(path)")
+        var out = Data()
+        _ = try archive.extract(entry) { out.append($0) }
+        return String(decoding: out, as: UTF8.self)
+    }
+
+    private func sampleFile(base: URL) -> FilePageSizes {
+        FilePageSizes(
+            url: base.appendingPathComponent("1250mic Libra GCDB/foo.pdf"),
+            pages: [PageSize(pageNumber: 1, widthMm: 750.0, heightMm: 290.0, usedFallback: false)],
+            totalPages: 1,
+            error: nil
+        )
+    }
+
+    @Test("Workbook contains the standard parts and a bold header row")
+    func workbookHasExpectedParts() throws {
+        let base = URL(fileURLWithPath: "/x")
+        let data = try SizesReport(baseFolder: base, files: [sampleFile(base: base)]).xlsx()
+
+        let sheet = try part(data, "xl/worksheets/sheet1.xml")
+        #expect(sheet.contains("Source filename"))
+        // Header row is row 1, header style is cellXfs index 1.
+        #expect(sheet.contains("<c r=\"A1\" s=\"1\""))
+        // Dimensions are numeric cells, not inline strings.
+        #expect(sheet.contains("<c r=\"D2\" s=\"0\"><v>750.0</v></c>"))
+
+        let styles = try part(data, "xl/styles.xml")
+        #expect(styles.contains("FFC7CE")) // red fill available for missing rows
+    }
+
+    @Test("Missing rows are appended and carry the red-highlight style")
+    func missingRowsAreHighlighted() throws {
+        let base = URL(fileURLWithPath: "/x")
+        let row = MappingRow(id: 2, fileName: "ghost (Corrected).pdf", folderName: "200gsm Metro Vibe")
+        let report = SizesReport(baseFolder: base, files: [sampleFile(base: base)], missing: [row])
+
+        let sheet = try part(try report.xlsx(), "xl/worksheets/sheet1.xml")
+        #expect(sheet.contains("ghost (Corrected).pdf"))
+        #expect(sheet.contains(SizesReport.missingFileNote))
+        // Row 3 = header + one measured page + this row; style 2 is the red fill.
+        #expect(sheet.contains("<c r=\"A3\" s=\"2\""))
+        // The fill spans the empty dimension columns too.
+        #expect(sheet.contains("<c r=\"D3\" s=\"2\"/>"))
+    }
+
+    @Test("Unreadable files carry the amber-highlight style")
+    func unreadableRowsAreHighlighted() throws {
+        let base = URL(fileURLWithPath: "/x")
+        let bad = FilePageSizes(
+            url: base.appendingPathComponent("oops.pdf"),
+            pages: [],
+            totalPages: 0,
+            error: "PDFKit could not open this file"
+        )
+        let sheet = try part(try SizesReport(baseFolder: base, files: [bad]).xlsx(), "xl/worksheets/sheet1.xml")
+        #expect(sheet.contains("Couldn&apos;t read: PDFKit could not open this file")
+            || sheet.contains("Couldn't read: PDFKit could not open this file"))
+        #expect(sheet.contains("<c r=\"A2\" s=\"3\""))
+    }
+
+    @Test("XML-special characters in filenames are escaped")
+    func xmlSpecialsAreEscaped() throws {
+        let base = URL(fileURLWithPath: "/x")
+        let row = MappingRow(id: 0, fileName: "A & B <front>.pdf", folderName: "Spec")
+        let sheet = try part(try SizesReport(baseFolder: base, files: [], missing: [row]).xlsx(), "xl/worksheets/sheet1.xml")
+        #expect(sheet.contains("A &amp; B &lt;front&gt;.pdf"))
     }
 }
 

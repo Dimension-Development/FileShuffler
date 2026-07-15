@@ -1182,12 +1182,14 @@ struct ContentView: View {
 
     // MARK: - Sizes report (PDF page dimensions)
 
-    /// True when there's at least one PDF/AI in the journal that hasn't
-    /// been undone away. Used to decide whether to show the Export sizes
-    /// button at all.
+    /// True when the report would have something to say: a PDF/AI in the
+    /// journal that hasn't been undone away, or a sheet row whose file was
+    /// never found (those export too, highlighted). Used to decide whether
+    /// to show the Export sizes button at all.
     private var canExportSizes: Bool {
         guard undoResult == nil, let result = applyResult else { return false }
         return result.moved.contains(where: Self.isPDFLike)
+            || !(plan?.sheetRowsWithoutFile.isEmpty ?? true)
     }
 
     /// Extract page dimensions from every PDF/AI in the journal and write
@@ -1195,6 +1197,10 @@ struct ContentView: View {
     /// apply itself stays snappy on jobs where this report isn't needed.
     /// Relative paths in the report are anchored to the destination —
     /// that's where the moved files now live.
+    ///
+    /// Written as .xlsx (not CSV) so sheet rows whose file was never found
+    /// can ride along colour-highlighted; `plan` still holds the plan the
+    /// apply ran from, so its unmatched rows are exactly the right list.
     private func exportSizesReport() {
         guard let destinationFolder, let result = applyResult else { return }
         let pdfURLs = result.moved
@@ -1202,19 +1208,29 @@ struct ContentView: View {
             .map(\.dst)
 
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.allowedContentTypes = [Self.xlsxType]
         panel.nameFieldStringValue = defaultSizesFilename()
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         let extracted = PDFSizeExtractor.extract(from: pdfURLs)
-        let report = SizesReport(baseFolder: destinationFolder, files: extracted)
+        let report = SizesReport(
+            baseFolder: destinationFolder,
+            files: extracted,
+            missing: plan?.sheetRowsWithoutFile ?? []
+        )
         do {
-            try report.csv().write(to: url, atomically: true, encoding: .utf8)
+            try report.xlsx().write(to: url, options: .atomic)
             error = nil
         } catch {
             self.error = "Could not write sizes report: \(error.localizedDescription)"
         }
     }
+
+    /// UTType for .xlsx. macOS ships the declaration (owned by Excel's
+    /// exported type), so the lookup can't realistically fail; `.data` is
+    /// a save-panel-safe fallback rather than a crash.
+    private static let xlsxType: UTType =
+        UTType(filenameExtension: "xlsx") ?? .data
 
     private func defaultSizesFilename() -> String {
         let folderName = destinationFolder?.lastPathComponent ?? "FileShuffler"

@@ -32,6 +32,9 @@ let package = Package(
             name: "FileShufflerTests",
             dependencies: [
                 "FileShuffler",
+                // Tests unzip the xlsx the sizes report writes to assert on
+                // the worksheet XML inside.
+                "ZIPFoundation",
                 .product(name: "Testing", package: "swift-testing")
             ],
             path: "Tests/FileShufflerTests",
