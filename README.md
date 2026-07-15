@@ -26,10 +26,12 @@ SwiftUI macOS app that reorganises a folder of files into a new structure descri
 - **Save / Open `.shuffle` project** (Cmd-S / Cmd-O) — small JSON sidecar capturing your folder, sheet, and column choices, plus the most recent apply's audit log. Reopen tomorrow and pick up where you left off.
 - **Export log…** on the apply summary — a plain-text report with operator, timestamps, base folder, every copy (`src → dst`), and any skips or errors. Suitable for filing alongside the production folder. Logs record whether the job copied or moved; old logs without that field read as moves.
 - **Empty source folder cleanup** — move-mode only, so dormant while the app copies: copying never empties a source folder. The code and tests remain for a future move toggle.
-- **Export sizes…** on the apply summary — produces a CSV listing every PDF/AI page in the destination folders with:
-  - Width × height in millimetres, using **TrimBox where defined, falling back to MediaBox** (matching print-prepress convention); fallback rows are flagged in a Notes column.
+- **Export sizes…** on the apply summary — produces an Excel workbook (`.xlsx`) listing every PDF/AI page in the destination folders with:
+  - Width × height in millimetres, using **TrimBox where defined, falling back to MediaBox** (matching print-prepress convention); fallback rows are flagged in a Notes column. Dimensions are real numeric cells, so they sort correctly in Excel.
   - **Spot colours** declared on the page or in any placed Form XObject (cutter templates, brand-logo PDFs). Reported verbatim from the PDF, deduped, alphabetised, semicolon-separated. CMYK-only pages get an empty cell. Process colorants and `/All` / `/None` special separations are filtered out.
-  - One row per page for multi-page PDFs. Files PDFKit can't read get a "Couldn't read" row, never silently skipped.
+  - One row per page for multi-page PDFs. Files PDFKit can't read get a "Couldn't read" row highlighted amber, never silently skipped.
+  - **Sheet rows whose file was never found** are appended and **highlighted red**, so the report also answers "what was on the job sheet but missing from the source folders?". The button now shows whenever there's something to report — copied PDFs *or* missing rows.
+  - The workbook is written by a small in-house writer (`MinimalXLSX`) on top of ZIPFoundation — no new dependencies.
 - **App icon** auto-built from `assets/icon-source.png` by `scripts/bundle-app.sh`.
 
 ## How to build & run
@@ -56,7 +58,7 @@ open ./FileShuffler.app
 swift test
 ```
 
-120 tests covering every engine:
+125 tests covering every engine:
 
 - **MatchEngine** (8) — normalisation rules and the real job-261144 fixture (double-space whitespace, missing Arencia A&I orphan).
 - **MoveExecutor** (10) — real-filesystem tempdir tests for apply, skip, replace, sticky replace-all, cancel, undo, and progress reporting in move mode, plus copy mode: originals left in place, undo deletes the copies, collision Replace overwrites without touching the source.
@@ -65,7 +67,7 @@ swift test
 - **SpreadsheetReader — V1 job sheet** (16) — against a dummy-data fixture mirroring the real job-sheet structure: worksheet listing/auto-pick, header row beneath banner rows, sparse-cell column alignment, front/back/material/colour-spec/qty detection, Material/Colour-Spec nesting with sanitised slashes, per-page dedup, quantity-disagreement handling, the unknown-relationship fallback reader, sheet-cell extension stripping, and banner artwork-link extraction.
 - **ShuffleProject I/O + AuditLog text export** (10) — JSON roundtrip with and without quantity column, future-version rejection, plain-text report formatting including copy vs move (and legacy) wording.
 - **FolderCleanup** (6) — empty/`.DS_Store`-only detection, base-folder safety, removal, and undo-after-cleanup.
-- **PDFSizeExtractor + SizesReport CSV** (13) — fixture PDFs generated at runtime via Core Graphics (single-page A4, multi-page, MediaBox-only, MediaBox+TrimBox), missing/non-PDF graceful failure, RFC 4180 quoting for filenames with commas/quotes, fallback note in Notes column.
+- **PDFSizeExtractor + SizesReport CSV/XLSX** (18) — fixture PDFs generated at runtime via Core Graphics (single-page A4, multi-page, MediaBox-only, MediaBox+TrimBox), missing/non-PDF graceful failure, RFC 4180 quoting for filenames with commas/quotes, fallback note in Notes column; xlsx suite unzips the generated workbook and asserts on the worksheet XML — bold header, numeric dimension cells, red-highlighted missing rows, amber-highlighted unreadable rows, XML escaping.
 - **SpotColourExtractor + CSV integration** (9) — hand-written minimal PDF fixtures with declared `Separation` colour spaces, single/multiple/duplicate spots, process-colorant filtering, `/All` filtering, page-level + Form-XObject merging, semicolon-separated CSV output.
 - **Idempotent matching + rename** (12) — strip helper edge cases (case insensitivity, mid-string `_xN` preserved, refuses empty); two-pass priority (exact wins over stripped when both could match); destination filename behaviour for Pass-1 vs Pass-2 matches across all four scenarios in the README behaviour table.
 
@@ -100,7 +102,8 @@ FileShuffler/
 │       ├── PageSize.swift              # PageSize, FilePageSizes models (incl. spotColours)
 │       ├── PDFSizeExtractor.swift      # PDFKit + CG dictionary check; mm output, TrimBox→MediaBox fallback
 │       ├── SpotColourExtractor.swift   # CGPDF dictionary walk for Separation/DeviceN, with XObject recursion
-│       └── SizesReport.swift           # CSV builder with RFC 4180 quoting
+│       ├── SizesReport.swift           # Report table builder — xlsx (highlighted) + CSV output
+│       └── MinimalXLSX.swift           # Tiny single-sheet .xlsx writer (ZIPFoundation)
 └── Tests/FileShufflerTests/
     ├── Fixtures/                     # Dummy-data V1 job-sheet workbooks
     ├── MatchEngineTests.swift
